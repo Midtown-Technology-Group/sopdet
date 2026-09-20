@@ -1367,8 +1367,9 @@ $envelope = [ordered]@{
     entities        = $script:OutEntities
 }
 
-$jsonPretty = $envelope | ConvertTo-Json -Depth 24
 $jsonCompact = $envelope | ConvertTo-Json -Depth 24 -Compress
+$jsonPretty = $jsonCompact
+try { $jsonPretty = $envelope | ConvertTo-Json -Depth 24 } catch { Write-Verbose "ignored: $_" }
 $jsonWire = $jsonCompact
 if ($Compress) {
     $b64 = Compress-Base64 $jsonCompact
@@ -1404,7 +1405,7 @@ if ($DryRun -or -not $Endpoint) {
         device_id = $Identity.device_id
         chunks    = $ingestResult.chunks
         spooled   = $ingestResult.spooled
-    } | ConvertTo-Json -Depth 6
+    } | ConvertTo-Json -Depth 6 -Compress
 }
 
 if ($delivered -and -not $script:Summarized) {

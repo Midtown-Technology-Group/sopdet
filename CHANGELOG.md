@@ -11,6 +11,10 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
   Server 2008 R2 with WMF 3+ through Windows 11): .NET 4.0-safe GZip constructor,
   registry firewall-profile fallback when `Get-NetFirewallProfile` is absent, and
   a PSScriptAnalyzer compatibility gate (`make compat-check`).
+- Fix: legacy PowerShell 3.0/4.0 `ConvertTo-Json` throws on string values ending
+  in a backslash (Windows paths). The pretty payload now falls back to the
+  compressed form, which is unaffected; validated on Server 2012 R2 (PS 4.0) and
+  Server 2012 (PS 3.0).
 
 - Release workflow (`.github/workflows/release.yml`): tag `v*` builds all
   platforms, optionally signs the Windows binaries with Azure Artifact Signing
