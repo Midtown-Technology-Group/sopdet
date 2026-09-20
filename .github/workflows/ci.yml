@@ -59,7 +59,7 @@ jobs:
       - name: build
         run: go build -o sopdet ./cmd/sopdet
       - name: collect (quick, dry-run)
-        run: ./sopdet -profile quick -dry-run -out out.json
+        run: ./sopdet -profile full -dry-run -out out.json
       - name: validate against schema
         run: go run ./cmd/schemacheck schema/inventory.schema.json out.json
       - name: summary
