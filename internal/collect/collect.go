@@ -41,6 +41,9 @@ func Run(ctx context.Context, level int, s *Session) (map[string]*schema.EntityC
 		if c.Name() == "appx_packages" && !s.IncludeAppx {
 			continue
 		}
+		if c.Name() == "processes" && !s.IncludeProcesses {
+			continue
+		}
 		start := time.Now()
 		cctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 		recs, err := runCollector(c, cctx, s)

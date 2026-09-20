@@ -5,6 +5,7 @@ package collect
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -48,28 +49,10 @@ func wmiCollectors() []Collector {
 		winStartupCollector{},
 		winMonitorCollector{},
 		winAppxCollector{},
-	}
-}
-
-func vmSystemFrom(manufacturer, model string, hypervisor bool) string {
-	m := strings.ToLower(manufacturer + " " + model)
-	switch {
-	case strings.Contains(m, "vmware"):
-		return "VMware"
-	case strings.Contains(m, "virtualbox"):
-		return "VirtualBox"
-	case strings.Contains(m, "hyper-v") || strings.Contains(m, "virtual machine"):
-		return "Hyper-V"
-	case strings.Contains(m, "qemu") || strings.Contains(m, "kvm"):
-		return "QEMU"
-	case strings.Contains(m, "parallels"):
-		return "Parallels"
-	case strings.Contains(m, "xen"):
-		return "Xen"
-	case hypervisor:
-		return "Hypervisor"
-	default:
-		return "Physical"
+		winThreatCollector{},
+		winProcessCollector{},
+		winRaidCollector{},
+		winVolumesCollector{},
 	}
 }
 
@@ -811,6 +794,9 @@ type winMonitorCollector struct{}
 func (winMonitorCollector) Name() string { return "monitors" }
 func (winMonitorCollector) Level() int   { return levelFull }
 func (winMonitorCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
+	if recs, ok := collectEDIDMonitors(); ok {
+		return recs, nil
+	}
 	var rows []struct {
 		DeviceID            string
 		Name                string
@@ -869,6 +855,223 @@ func (winAppxCollector) Collect(_ context.Context, _ *Session) ([]schema.Record,
 			"key": "appx:" + r.PackageFullName, "name": r.Name, "version": r.Version,
 			"vendor": r.Publisher, "install_location": r.InstallLocation, "format": "appx",
 			"source": "appx", "scope": "user",
+		})
+	}
+	return out, nil
+}
+
+func bitlockerMethod(v uint32) string {
+	switch v {
+	case 1:
+		return "AES_128_WITH_DIFFUSER"
+	case 2:
+		return "AES_256_WITH_DIFFUSER"
+	case 3:
+		return "AES_128"
+	case 4:
+		return "AES_256"
+	case 5:
+		return "HARDWARE_ENCRYPTION"
+	case 6:
+		return "XTS_AES_128"
+	case 7:
+		return "XTS_AES_256"
+	default:
+		return ""
+	}
+}
+
+type winVolumesCollector struct{}
+
+func (winVolumesCollector) Name() string { return "volumes" }
+func (winVolumesCollector) Level() int   { return levelMinimal }
+func (winVolumesCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
+	var disks []struct {
+		DeviceID           string
+		VolumeName         string
+		FileSystem         string
+		Size               uint64
+		FreeSpace          uint64
+		DriveType          uint32
+		VolumeSerialNumber string
+	}
+	if err := wmi.Query("SELECT DeviceID,VolumeName,FileSystem,Size,FreeSpace,DriveType,VolumeSerialNumber FROM Win32_LogicalDisk", &disks); err != nil {
+		return nil, err
+	}
+	type enc struct {
+		DriveLetter      string
+		ProtectionStatus uint32
+		EncryptionMethod uint32
+		ConversionStatus uint32
+	}
+	encByLetter := map[string]enc{}
+	var encs []enc
+	if err := wmi.QueryNamespace("SELECT DriveLetter,ProtectionStatus,EncryptionMethod,ConversionStatus FROM Win32_EncryptableVolume", &encs, "root\\cimv2\\security\\microsoftvolumeencryption"); err == nil {
+		for _, e := range encs {
+			encByLetter[strings.TrimRight(e.DriveLetter, ":")] = e
+		}
+	}
+	out := make([]schema.Record, 0, len(disks))
+	for _, d := range disks {
+		rec := schema.Record{
+			"key":           "volume:" + d.DeviceID,
+			"drive_letter":  d.DeviceID,
+			"label":         d.VolumeName,
+			"file_system":   d.FileSystem,
+			"device_type":   d.DriveType,
+			"serial_number": d.VolumeSerialNumber,
+		}
+		if d.Size > 0 {
+			rec["capacity_bytes"] = int64(d.Size)
+			rec["free_bytes"] = int64(d.FreeSpace)
+			rec["used_percent"] = math.Round(100*float64(d.Size-d.FreeSpace)/float64(d.Size)*10) / 10
+		}
+		if e, ok := encByLetter[strings.TrimRight(d.DeviceID, ":")]; ok {
+			rec["encrypt_name"] = "BitLocker"
+			switch e.ProtectionStatus {
+			case 1:
+				rec["encrypt_status"] = "on"
+			case 0:
+				rec["encrypt_status"] = "off"
+			default:
+				rec["encrypt_status"] = "unknown"
+			}
+			rec["encrypt_algo"] = bitlockerMethod(e.EncryptionMethod)
+			rec["encrypt_type"] = "software"
+		}
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+func decodeU16(v []uint16) string {
+	var b strings.Builder
+	for _, c := range v {
+		if c == 0 {
+			break
+		}
+		b.WriteRune(rune(c))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func collectEDIDMonitors() (recs []schema.Record, ok bool) {
+	defer func() {
+		if recover() != nil {
+			recs = nil
+			ok = false
+		}
+	}()
+	var rows []struct {
+		UserFriendlyName  []uint16
+		SerialNumberID    []uint16
+		ManufacturerName  []uint16
+		ProductCodeID     []uint16
+		YearOfManufacture uint16
+	}
+	if err := wmi.QueryNamespace("SELECT UserFriendlyName,SerialNumberID,ManufacturerName,ProductCodeID,YearOfManufacture FROM WmiMonitorID", &rows, "root\\wmi"); err != nil {
+		return nil, false
+	}
+	out := make([]schema.Record, 0, len(rows))
+	for _, r := range rows {
+		name := decodeU16(r.UserFriendlyName)
+		serial := decodeU16(r.SerialNumberID)
+		key := serial
+		if key == "" {
+			key = name
+		}
+		out = append(out, schema.Record{
+			"key": "monitor:" + key, "manufacturer": decodeU16(r.ManufacturerName), "name": name,
+			"serial_number": serial, "product_code": decodeU16(r.ProductCodeID),
+			"year_of_manufacture": r.YearOfManufacture, "source": "edid",
+		})
+	}
+	return out, len(out) > 0
+}
+
+type winThreatCollector struct{}
+
+func (winThreatCollector) Name() string { return "antivirus_threats" }
+func (winThreatCollector) Level() int   { return levelQuick }
+func (winThreatCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
+	script := "Get-MpThreatDetection -ErrorAction SilentlyContinue | Select-Object -First 200 | ForEach-Object { [pscustomobject]@{ ThreatID=$_.ThreatID; DetectedAt=[string]$_.InitialDetectionTime; Resources=($_.Resources -join ';') } } | ConvertTo-Json -Compress -Depth 3"
+	output, err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script).Output()
+	if err != nil || len(output) == 0 {
+		return []schema.Record{}, nil
+	}
+	type threat struct {
+		ThreatID   int64
+		DetectedAt string
+		Resources  string
+	}
+	var rows []threat
+	if err := json.Unmarshal(output, &rows); err != nil {
+		var single threat
+		if json.Unmarshal(output, &single) != nil {
+			return []schema.Record{}, nil
+		}
+		rows = []threat{single}
+	}
+	out := make([]schema.Record, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, schema.Record{
+			"key":       "threat:" + strconv.FormatInt(r.ThreatID, 10) + ":" + r.DetectedAt,
+			"threat_id": r.ThreatID, "detected_at": r.DetectedAt, "resources": r.Resources,
+		})
+	}
+	return out, nil
+}
+
+type winProcessCollector struct{}
+
+func (winProcessCollector) Name() string { return "processes" }
+func (winProcessCollector) Level() int   { return levelFull }
+func (winProcessCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
+	var rows []struct {
+		Name            string
+		ProcessId       uint32
+		ParentProcessId uint32
+		WorkingSetSize  uint64
+		ExecutablePath  string
+		CommandLine     string
+		CreationDate    time.Time
+	}
+	if err := wmi.Query("SELECT Name,ProcessId,ParentProcessId,WorkingSetSize,ExecutablePath,CommandLine,CreationDate FROM Win32_Process", &rows); err != nil {
+		return nil, err
+	}
+	out := make([]schema.Record, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, schema.Record{
+			"key":  "process:" + strconv.Itoa(int(r.ProcessId)) + ":" + r.CreationDate.Format(time.RFC3339),
+			"name": r.Name, "pid": r.ProcessId, "parent_pid": r.ParentProcessId,
+			"working_set_bytes": int64(r.WorkingSetSize), "executable_path": r.ExecutablePath,
+			"command_line": r.CommandLine, "start_time": r.CreationDate.Format(time.RFC3339),
+		})
+	}
+	return out, nil
+}
+
+type winRaidCollector struct{}
+
+func (winRaidCollector) Name() string { return "raid_controllers" }
+func (winRaidCollector) Level() int   { return levelFull }
+func (winRaidCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
+	var rows []struct {
+		Name            string
+		Manufacturer    string
+		DriverName      string
+		DeviceID        string
+		Status          string
+		HardwareVersion string
+	}
+	if err := wmi.Query("SELECT Name,Manufacturer,DriverName,DeviceID,Status,HardwareVersion FROM Win32_SCSIController", &rows); err != nil {
+		return nil, err
+	}
+	out := make([]schema.Record, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, schema.Record{
+			"key": "raid:" + r.DeviceID, "name": r.Name, "manufacturer": r.Manufacturer,
+			"driver_name": r.DriverName, "status": r.Status, "firmware": r.HardwareVersion,
 		})
 	}
 	return out, nil

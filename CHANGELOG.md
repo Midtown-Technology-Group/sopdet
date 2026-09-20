@@ -5,6 +5,21 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Release workflow (`.github/workflows/release.yml`): tag `v*` builds all
+  platforms, optionally signs the Windows binaries with Azure Artifact Signing
+  (Public + Private Trust) when Azure OIDC secrets are configured, publishes the
+  public tier as a GitHub Release, and keeps the private tier as a workflow
+  artifact.
+- Windows collector parity: volume encryption (BitLocker), monitor EDID detail
+  with Win32_DesktopMonitor fallback, antivirus threat detections, running
+  processes (gated by `-include-processes`), and RAID/SCSI controllers.
+- Linux collectors: DMI BIOS, virtualization, Secure Boot, TPM, local users,
+  listening ports, and multi-distro software (dpkg, rpm, pacman, apk).
+- macOS collectors: hardware/serial/UUID (system_profiler + ioreg), BIOS/firmware,
+  virtualization, installed applications, and graphics.
+
 ## [0.1.0] - 2026-09-20
 
 ### Added

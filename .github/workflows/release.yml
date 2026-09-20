@@ -1,0 +1,124 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+      - name: cross-compile
+        run: make cross
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin
+          path: bin/
+          if-no-files-found: error
+
+  # Optional code signing. Runs only when Azure OIDC secrets are configured;
+  # otherwise the release ships unsigned (still usable on non-WDAC endpoints).
+  sign:
+    needs: build
+    runs-on: windows-latest
+    env:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARTIFACT_SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+      ARTIFACT_SIGNING_ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+      ARTIFACT_SIGNING_CERT_PROFILE_PUBLIC: ${{ vars.ARTIFACT_SIGNING_CERT_PROFILE_PUBLIC }}
+      ARTIFACT_SIGNING_CERT_PROFILE_PRIVATE: ${{ vars.ARTIFACT_SIGNING_CERT_PROFILE_PRIVATE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: bin
+          path: bin
+      - name: Azure login (OIDC)
+        if: env.AZURE_CLIENT_ID != ''
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+      - name: Install Artifact Signing client (signtool dlib)
+        if: env.AZURE_CLIENT_ID != ''
+        uses: nuget/setup-nuget@v2
+      - name: Fetch dlib
+        if: env.AZURE_CLIENT_ID != ''
+        shell: pwsh
+        run: |
+          nuget install Microsoft.Trusted.Signing.Client -OutputDirectory tools -NonInteractive
+          $dlib = Get-ChildItem tools -Recurse -Filter Azure.CodeSigning.Dlib.dll | Select-Object -First 1
+          if (-not $dlib) { throw "Artifact Signing dlib not found" }
+          "ARTIFACT_SIGNING_DLIB_PATH=$($dlib.FullName)" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+      - name: Sign public tier
+        if: env.AZURE_CLIENT_ID != ''
+        shell: pwsh
+        run: ./scripts/sign-artifacts.ps1 -Profile Public -OutDir dist/signed-public -File bin/sopdet-windows-amd64.exe -File bin/sopdet-windows-arm64.exe
+      - name: Sign private tier
+        if: env.AZURE_CLIENT_ID != ''
+        shell: pwsh
+        run: ./scripts/sign-artifacts.ps1 -Profile Private -OutDir dist/signed-private -File bin/sopdet-windows-amd64.exe -File bin/sopdet-windows-arm64.exe
+      - uses: actions/upload-artifact@v4
+        if: env.AZURE_CLIENT_ID != ''
+        with:
+          name: signed-public
+          path: dist/signed-public/
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: env.AZURE_CLIENT_ID != ''
+        with:
+          name: signed-private
+          path: dist/signed-private/
+          if-no-files-found: ignore
+
+  release:
+    needs: [build, sign]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: bin
+          path: bin
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: signed-public
+          path: dist/signed-public
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: signed-private
+          path: dist/signed-private
+      - name: Stage public tier
+        run: bash scripts/publish.sh public dist/signed-public
+      - name: Stage private tier
+        if: ${{ hashFiles('dist/signed-private/*.exe') != '' }}
+        run: bash scripts/publish.sh private dist/signed-private
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/public/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Sopdet $GITHUB_REF_NAME" \
+            --generate-notes
+      - name: Private tier (workflow artifact only)
+        uses: actions/upload-artifact@v4
+        with:
+          name: private-tier
+          path: dist/private/
+          if-no-files-found: ignore

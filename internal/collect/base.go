@@ -22,11 +22,15 @@ const (
 )
 
 func baseCollectors() []Collector {
-	common := []Collector{hostCollector{}, volumesCollector{}, networkCollector{}}
 	if runtime.GOOS == "windows" {
-		return common
+		return []Collector{hostCollector{}, networkCollector{}}
 	}
-	return append(common, osCollector{}, hardwareCollector{}, processorsCollector{}, memoryCollector{})
+	if runtime.GOOS == "darwin" {
+		return []Collector{hostCollector{}, networkCollector{}, volumesCollector{},
+			osCollector{}, processorsCollector{}, memoryCollector{}}
+	}
+	return []Collector{hostCollector{}, volumesCollector{}, networkCollector{},
+		osCollector{}, hardwareCollector{}, processorsCollector{}, memoryCollector{}}
 }
 
 type hostCollector struct{}
