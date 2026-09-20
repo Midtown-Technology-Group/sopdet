@@ -3,6 +3,7 @@
 package collect
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -34,6 +35,9 @@ func PlatformCollectors(_ *Session) []Collector {
 		macVirtualizationCollector{},
 		macSoftwareCollector{},
 		macGraphicsCollector{},
+		macTPMCollector{},
+		macLocalUserCollector{},
+		macListeningPortCollector{},
 	}
 }
 
@@ -208,6 +212,105 @@ func (macGraphicsCollector) Collect(_ context.Context, _ *Session) ([]schema.Rec
 		out = append(out, schema.Record{
 			"key": "gpu:" + strconv.Itoa(i), "name": name, "vendor": getStr(gpu, "spdisplays_vendor"),
 			"driver_version": getStr(gpu, "spdisplays_gmux_version"),
+		})
+	}
+	return out, nil
+}
+
+type macTPMCollector struct{}
+
+func (macTPMCollector) Name() string { return "tpm" }
+func (macTPMCollector) Level() int   { return levelQuick }
+func (macTPMCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
+	items, err := systemProfiler("SPiBridgeDataType")
+	if err != nil || len(items) == 0 {
+		return []schema.Record{}, nil
+	}
+	rec := schema.Record{"key": "tpm", "present": true, "source": "ibridge"}
+	for _, key := range []string{"ibridge_model", "ibridge_firmware_version", "ibridge_boot_uuid"} {
+		if v := getStr(items[0], key); v != "" {
+			rec[strings.TrimPrefix(key, "ibridge_")] = v
+		}
+	}
+	return []schema.Record{rec}, nil
+}
+
+type macLocalUserCollector struct{}
+
+func (macLocalUserCollector) Name() string { return "local_users" }
+func (macLocalUserCollector) Level() int   { return levelQuick }
+func (macLocalUserCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
+	out := []schema.Record{}
+	if raw, err := runCommand("dscl", ".", "-list", "/Users", "UniqueID"); err == nil {
+		for _, line := range strings.Split(raw, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				continue
+			}
+			name, uid := fields[0], fields[1]
+			if strings.HasPrefix(name, "_") {
+				continue
+			}
+			out = append(out, schema.Record{
+				"key": "user:" + uid, "name": name, "uid": uid, "account_type": "local",
+				"system_account": len(uid) > 0 && uid[0] < '5',
+			})
+		}
+		return out, nil
+	}
+	f, err := os.Open("/etc/passwd")
+	if err != nil {
+		return out, nil
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		parts := strings.Split(sc.Text(), ":")
+		if len(parts) < 7 {
+			continue
+		}
+		out = append(out, schema.Record{
+			"key": "user:" + parts[2], "name": parts[0], "uid": parts[2], "gid": parts[3],
+			"full_name": parts[4], "home": parts[5], "shell": parts[6], "account_type": "local",
+		})
+	}
+	return out, sc.Err()
+}
+
+type macListeningPortCollector struct{}
+
+func (macListeningPortCollector) Name() string { return "listening_ports" }
+func (macListeningPortCollector) Level() int   { return levelFull }
+func (macListeningPortCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
+	raw, err := runCommand("lsof", "-nP", "-iTCP", "-sTCP:LISTEN")
+	if err != nil {
+		return []schema.Record{}, nil
+	}
+	out := []schema.Record{}
+	lines := strings.Split(raw, "\n")
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		if len(fields) < 9 {
+			continue
+		}
+		name := fields[len(fields)-1]
+		idx := strings.LastIndex(name, ":")
+		if idx < 0 {
+			continue
+		}
+		addr := name[:idx]
+		port, err := strconv.Atoi(name[idx+1:])
+		if err != nil || port < 1 {
+			continue
+		}
+		family := "ipv4"
+		if strings.Contains(addr, ":") {
+			family = "ipv6"
+		}
+		out = append(out, schema.Record{
+			"key":      "tcp|" + family + "|" + addr + "|" + strconv.Itoa(port),
+			"protocol": "tcp", "address": addr, "port": port, "family": family,
+			"process": fields[0], "pid": fields[1],
 		})
 	}
 	return out, nil
