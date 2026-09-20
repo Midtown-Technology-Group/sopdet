@@ -94,10 +94,14 @@ make publish-public   # stage dist/public
 make publish-private  # stage dist/private
 ```
 
-Signing uses Azure Artifact Signing (see `scripts/artifact-signing.env.example`).
+Provisioning: `bash scripts/artifact-signing-setup.sh` creates the Basic Artifact
+Signing account and prints the identity-validation + certificate-profile steps;
+fill `scripts/artifact-signing.env` (from `artifact-signing.env.example`).
+Signing itself uses Azure Artifact Signing.
 Every staged tier ships `MANIFEST.sha256`, the schema, and `WHAT-IT-COLLECTS.md`.
 Note: running on a WDAC-enforced endpoint additionally requires a supplemental
-App Control policy (or Managed Installer) that trusts the publisher.
+App Control policy (or Managed Installer) that trusts the publisher — see
+[docs/appcontrol.md](docs/appcontrol.md) and `scripts/New-AppControlPolicy.ps1`.
 
 ## License
 
