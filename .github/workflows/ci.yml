@@ -47,3 +47,26 @@ jobs:
           go-version: '1.27.x'
       - name: cross-compile
         run: make cross
+
+  # Real macOS execution: build native and validate a collected envelope.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+      - name: build
+        run: go build -o sopdet ./cmd/sopdet
+      - name: collect (quick, dry-run)
+        run: ./sopdet -profile quick -dry-run -out out.json
+      - name: validate against schema
+        run: go run ./cmd/schemacheck schema/inventory.schema.json out.json
+      - name: summary
+        run: |
+          python3 - <<'PY'
+          import json
+          d = json.load(open("out.json"))
+          print("macOS entities:", len(d["entities"]), sorted(d["entities"].keys()))
+          print("entity_errors:", list(d.get("entity_errors", {}).keys()))
+          PY
