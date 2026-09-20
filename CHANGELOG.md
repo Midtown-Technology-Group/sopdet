@@ -7,6 +7,11 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ### Added
 
+- PowerShell collector now targets **Windows PowerShell 3.0** (Windows 7 SP1 /
+  Server 2008 R2 with WMF 3+ through Windows 11): .NET 4.0-safe GZip constructor,
+  registry firewall-profile fallback when `Get-NetFirewallProfile` is absent, and
+  a PSScriptAnalyzer compatibility gate (`make compat-check`).
+
 - Release workflow (`.github/workflows/release.yml`): tag `v*` builds all
   platforms, optionally signs the Windows binaries with Azure Artifact Signing
   (Public + Private Trust) when Azure OIDC secrets are configured, publishes the

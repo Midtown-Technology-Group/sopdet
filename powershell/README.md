@@ -25,8 +25,11 @@ tools/Invoke-SopdetFanout.ps1  Guarded, operator-driven deployment to a target l
 
 ## Requirements
 
-- Windows PowerShell 5.1 (present on Windows 7 SP1 / Server 2008 R2 and later).
+- **Windows PowerShell 3.0+** — native on Windows 8 / Server 2012 and later;
+  Windows 7 SP1 / Server 2008 R2 need WMF 3+ (WMF 5.1 recommended).
 - No elevated rights for normal use.
+- Compatibility is enforced by `powershell/analyzer-settings.psd1`
+  (run `make compat-check`).
 - Outbound HTTPS to your Bifrost endpoint (or none, in file-drop mode).
 - Optional: a proxy, if the environment requires one.
 

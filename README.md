@@ -64,6 +64,19 @@ binary is loaded automatically.
 | `-proxy`, `-state` | proxy URL, delta state file |
 | `-include-appx`, `-include-processes` | extra entities |
 
+## Platform support
+
+| Platform | Agent |
+|---|---|
+| Windows 10 / Server 2016+ | Go agent (cross-compiled) |
+| Windows 7 SP1 / Server 2008 R2 – Server 2012 R2 | PowerShell package (PowerShell 3.0+, WMF 3+) |
+| Linux | Go agent |
+| macOS | Go agent |
+
+The Go toolchain requires Windows 10/Server 2016+ (Go 1.21+ dropped older
+Windows); the PowerShell package covers legacy endpoints down to PowerShell 3.0
+and shares the same contract, so `device_inventory` remains uniform.
+
 ## Contract
 
 One envelope per scan. Every entity record carries a stable `key`, a content

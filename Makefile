@@ -4,7 +4,7 @@ LDFLAGS := -s -w -X main.Version=$(VERSION)
 DIST    := dist
 
 .PHONY: build cross test vet fmt clean sign-public sign-private publish-public publish-private \
-        check fmt-check schema-check analyzer
+        check fmt-check schema-check analyzer compat-check
 
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/$(BINARY)
@@ -47,7 +47,13 @@ analyzer:
 		echo "PSScriptAnalyzer clean"; \
 	else echo "pwsh not found; skipping PSScriptAnalyzer"; fi
 
-check: fmt-check vet test schema-check analyzer
+compat-check:
+	@if command -v pwsh >/dev/null 2>&1; then \
+		pwsh -NoProfile -Command '$$r = Invoke-ScriptAnalyzer -Path powershell/Invoke-SopdetInventory.ps1 -Settings powershell/analyzer-settings.psd1 -Severity Warning,Error; if ($$r) { $$r | Format-Table RuleName,Line,Message -AutoSize | Out-String | Write-Host; exit 1 }'; \
+		echo "PowerShell 3.0 compatibility clean"; \
+	else echo "pwsh not found; skipping compatibility check"; fi
+
+check: fmt-check vet test schema-check analyzer compat-check
 	@echo "verification gate passed"
 
 # --- signing and publishing -------------------------------------------------

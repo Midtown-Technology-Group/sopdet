@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+#Requires -Version 3.0
 [CmdletBinding()]
 param(
     [string]$Endpoint,
@@ -179,7 +179,13 @@ function Write-Utf8 {
 function Compress-Base64([string]$Text) {
     $bytes = [Text.Encoding]::UTF8.GetBytes($Text)
     $ms = New-Object System.IO.MemoryStream
-    $gz = New-Object System.IO.Compression.GZipStream($ms, [System.IO.Compression.CompressionLevel]::Optimal)
+    $level = $null
+    try { $level = [System.IO.Compression.CompressionLevel]::Optimal } catch { Write-Verbose "ignored: $_" }
+    if ($null -ne $level) {
+        $gz = New-Object System.IO.Compression.GZipStream($ms, $level)
+    } else {
+        $gz = New-Object System.IO.Compression.GZipStream($ms, [System.IO.Compression.CompressionMode]::Compress)
+    }
     try { $gz.Write($bytes, 0, $bytes.Length) } finally { $gz.Dispose() }
     try { return [Convert]::ToBase64String($ms.ToArray()) } finally { $ms.Dispose() }
 }
@@ -1193,17 +1199,41 @@ function Get-AntivirusRecord {
 
 function Get-FirewallRecord {
     $out = @()
-    try {
-        $out = Get-NetFirewallProfile -ErrorAction Stop | ForEach-Object {
-            [ordered]@{
-                key              = "firewall:$($_.Name)"
-                profile          = "$($_.Name)"
-                enabled          = [bool]$_.Enabled
-                default_inbound  = "$($_.DefaultInboundAction)"
-                default_outbound = "$($_.DefaultOutboundAction)"
+    if (Get-Command Get-NetFirewallProfile -ErrorAction SilentlyContinue) {
+        try {
+            $out = Get-NetFirewallProfile -ErrorAction Stop | ForEach-Object {
+                [ordered]@{
+                    key              = "firewall:$($_.Name)"
+                    profile          = "$($_.Name)"
+                    enabled          = [bool]$_.Enabled
+                    default_inbound  = "$($_.DefaultInboundAction)"
+                    default_outbound = "$($_.DefaultOutboundAction)"
+                }
             }
+        } catch { Write-Verbose "ignored: $_" }
+    }
+    if (@($out).Count -eq 0) {
+        $profiles = @(
+            @{ Key = 'DomainProfile'; Name = 'domain' },
+            @{ Key = 'StandardProfile'; Name = 'private' },
+            @{ Key = 'PublicProfile'; Name = 'public' }
+        )
+        foreach ($p in $profiles) {
+            $path = "HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\$($p.Key)"
+            try {
+                $k = Get-ItemProperty $path -ErrorAction Stop
+                $rec = [ordered]@{ key = "firewall:$($p.Name)"; profile = $p.Name }
+                if ($null -ne $k.EnableFirewall) { $rec['enabled'] = ([int]$k.EnableFirewall -eq 1) }
+                if ($null -ne $k.DefaultInboundAction) {
+                    if ([int]$k.DefaultInboundAction -eq 1) { $rec['default_inbound'] = 'allow' } else { $rec['default_inbound'] = 'block' }
+                }
+                if ($null -ne $k.DefaultOutboundAction) {
+                    if ([int]$k.DefaultOutboundAction -eq 1) { $rec['default_outbound'] = 'block' } else { $rec['default_outbound'] = 'allow' }
+                }
+                $out += $rec
+            } catch { Write-Verbose "ignored: $_" }
         }
-    } catch { Write-Verbose "ignored: $_" }
+    }
     return @($out)
 }
 

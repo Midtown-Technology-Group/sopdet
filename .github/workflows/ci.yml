@@ -19,14 +19,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: PSScriptAnalyzer
+      - name: Install PSScriptAnalyzer
         shell: pwsh
         run: |
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -AllowClobber
-          $r = Invoke-ScriptAnalyzer -Path ./powershell -Recurse -Severity Warning,Error
-          $r += Invoke-ScriptAnalyzer -Path ./scripts -Recurse -Severity Warning,Error
-          if ($r) { $r | Format-Table RuleName,ScriptName,Line,Message -AutoSize | Out-String | Write-Host; exit 1 }
+      - name: analyzer + PowerShell 3.0 compatibility
+        run: make analyzer compat-check
 
   govulncheck:
     runs-on: ubuntu-latest
