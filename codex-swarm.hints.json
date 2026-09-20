@@ -1,0 +1,28 @@
+{
+  "commands": [
+    {
+      "name": "verification gate",
+      "command": "make check",
+      "docs": "AGENTS.md",
+      "note": "gofmt + vet + tests + schema parity + PSScriptAnalyzer. Run before opening a PR; CI runs the same gate plus cross-compilation."
+    },
+    {
+      "name": "cross build",
+      "command": "make cross",
+      "docs": "README.md",
+      "note": "Builds windows/linux/darwin, amd64+arm64. Signing and publish targets are Windows signing-host only."
+    },
+    {
+      "name": "schema parity",
+      "command": "make schema-check",
+      "docs": "AGENTS.md",
+      "note": "schema/inventory.schema.json and powershell/inventory.schema.json are the same contract and must stay byte-identical."
+    },
+    {
+      "name": "signed release",
+      "command": "make publish-public",
+      "docs": "docs/appcontrol.md",
+      "note": "Public tier = unsigned + PublicTrust-signed; private tier = PrivateTrust. WDAC-enforced fleets also need a supplemental App Control policy."
+    }
+  ]
+}

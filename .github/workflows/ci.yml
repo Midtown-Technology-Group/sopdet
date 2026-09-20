@@ -12,12 +12,31 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27.x'
-      - name: gofmt
-        run: test -z "$(gofmt -l .)"
-      - name: vet
-        run: go vet ./...
-      - name: test
-        run: go test ./...
+      - name: gate (fmt, vet, tests, schema parity)
+        run: make fmt-check vet test schema-check
+
+  powershell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -AllowClobber
+          $r = Invoke-ScriptAnalyzer -Path ./powershell -Recurse -Severity Warning,Error
+          $r += Invoke-ScriptAnalyzer -Path ./scripts -Recurse -Severity Warning,Error
+          if ($r) { $r | Format-Table RuleName,ScriptName,Line,Message -AutoSize | Out-String | Write-Host; exit 1 }
+
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
   cross:
     runs-on: ubuntu-latest
