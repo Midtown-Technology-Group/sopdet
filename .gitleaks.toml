@@ -1,0 +1,14 @@
+title = "sopdet"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Non-secret example/placeholder files"
+paths = [
+  '''scripts/artifact-signing\.env\.example''',
+  '''inventory\.config\.sample\.json''',
+  '''powershell/inventory\.config\.sample\.json''',
+  '''samples/''',
+  '''testdata/''',
+]

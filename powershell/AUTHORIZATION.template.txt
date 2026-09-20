@@ -1,0 +1,38 @@
+AUTHORIZATION / SCOPE ACKNOWLEDGEMENT (TEMPLATE — not legal advice)
+
+Engagement reference : __________________________
+Client / organization: __________________________
+Authorized by        : __________________________  (name, title)
+Date                 : __________________________
+
+Assets in scope
+  [ ] Explicit list attached                        [ ] All managed Windows endpoints
+  [ ] Specific sites/OU: ______________________     [ ] Other: ____________________
+
+Tool
+  Bifrost device inventory collector, version ______, SHA-256 ____________
+  (verify against MANIFEST.sha256)
+
+Authorized activity
+  [ ] Read-only local inventory collection
+  [ ] Local JSON output returned to assessor (no network egress)
+  [ ] Direct upload to assessor endpoint: ______________________________
+  [ ] Deployment to the in-scope assets via:  [ ] client GPO/Intune/SCCM
+                                              [ ] operator-run fan-out (admin credentials)
+  [ ] Scheduled recurring collection (cadence: ____________)
+
+Data handling
+  Collected data includes device/user identifiers, installed software,
+  network configuration, and security posture. The client acknowledges this
+  constitutes personal data and agrees to the assessor's data-handling and
+  retention terms: ______________________________
+
+Retention / deletion
+  Data retained for __________ and deleted on request or at engagement close.
+
+Out of scope
+  No changes to device configuration, no installation, no destructive actions,
+  no use on assets outside the list above.
+
+Client authorization (signature): ____________________  Date: __________
+Assessor acceptance   (signature): ____________________  Date: __________

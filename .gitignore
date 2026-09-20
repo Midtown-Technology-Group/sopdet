@@ -1,0 +1,12 @@
+bin/
+dist/
+*.exe
+*.tmp
+inventory.config.json
+*.local.json
+scripts/artifact-signing.env
+
+# PowerShell package runtime artifacts
+powershell/last-run.json
+powershell/last-run.log
+powershell/results/

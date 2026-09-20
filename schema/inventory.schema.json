@@ -1,0 +1,222 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/bifrost-device-inventory/2.0.0/inventory.schema.json",
+  "title": "Device Inventory Envelope",
+  "description": "Read-only endpoint inventory snapshot. One envelope per scan; entities are per-entity record collections with a natural key and content fingerprint. Field naming is snake_case; sizes are bytes, durations seconds, clocks Hz/MTs, timestamps ISO-8601 UTC.",
+  "type": "object",
+  "required": ["schema_version", "scan_id", "action", "host_identifier", "calendar_time", "unix_time", "entities"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": { "const": 2 },
+    "scan_id": { "type": "string", "format": "uuid" },
+    "base_scan_id": { "type": ["string", "null"], "description": "For action=delta, the scan_id this delta is relative to" },
+    "action": { "enum": ["snapshot", "delta", "added", "removed", "changed"] },
+    "partial": { "type": "boolean", "description": "true when a reduced profile was collected" },
+    "host_identifier": {
+      "type": "object",
+      "required": ["device_id", "device_id_source"],
+      "properties": {
+        "device_id": { "type": "string", "minLength": 8 },
+        "device_id_source": { "enum": ["machine_guid", "smbios_uuid", "instance"] },
+        "hardware_uuid": { "type": ["string", "null"], "description": "DMTF/SMBIOS hardware UUID; survives OS reinstall" },
+        "machine_guid": { "type": ["string", "null"] },
+        "instance_id": { "type": "string", "description": "Per-install persisted random id" },
+        "hostname": { "type": "string" },
+        "fqdn": { "type": ["string", "null"] }
+      }
+    },
+    "calendar_time": { "type": "string", "format": "date-time" },
+    "unix_time": { "type": "integer" },
+    "received_at": { "type": ["string", "null"], "format": "date-time", "description": "Server/transaction time; null until ingest" },
+    "decorators": {
+      "type": "object",
+      "properties": {
+        "username": { "type": ["string", "null"] },
+        "upn": { "type": ["string", "null"] },
+        "uptime_seconds": { "type": ["integer", "null"] },
+        "os_platform": { "type": "string" },
+        "is_elevated": { "type": "boolean" }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "required": ["name", "version", "os"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "os": { "type": "string" },
+        "arch": { "type": ["string", "null"] },
+        "elevated": { "type": "boolean" },
+        "powershell": { "type": ["string", "null"] },
+        "profile": { "enum": ["minimal", "quick", "full"] },
+        "user": { "type": ["string", "null"] }
+      }
+    },
+    "truncated": { "type": "array", "items": { "type": "string" } },
+    "chunk": {
+      "type": "object",
+      "description": "Present when the envelope is a transport chunk; `entities` then holds only the listed subset.",
+      "required": ["index", "count", "entities"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "count": { "type": "integer", "minimum": 1 },
+        "entities": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "entity_errors": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": { "type": "string" },
+          "gated": { "type": "boolean", "description": "true when failure looks like access-denied / requires elevation" },
+          "durationMs": { "type": "integer" }
+        }
+      }
+    },
+    "entities": {
+      "type": "object",
+      "description": "Keyed by entity type. Every value has the same collection shape.",
+      "propertyNames": {
+        "enum": [
+          "host", "os", "hardware", "virtualization", "secureboot", "uac",
+          "antivirus", "firewall_profiles", "volumes", "network_interfaces",
+          "bios", "processors", "memory_modules", "graphics", "tpm",
+          "software", "os_patches", "local_users", "logged_on_users",
+          "batteries", "printers", "services", "startup_items", "drivers",
+          "physical_disks", "listening_ports", "monitors", "usb_devices",
+          "appx_packages", "processes"
+        ]
+      },
+      "additionalProperties": { "oneOf": [ { "$ref": "#/$defs/entityCollection" }, { "$ref": "#/$defs/entityDelta" } ] }
+    }
+  },
+  "$defs": {
+    "entityCollection": {
+      "type": "object",
+      "required": ["count", "fingerprint", "records"],
+      "properties": {
+        "count": { "type": "integer", "minimum": 0 },
+        "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "records": { "type": "array", "items": { "$ref": "#/$defs/record" } },
+        "summarized": { "type": "boolean", "description": "true when the byte budget forced record truncation; omitted records are not reflected in state" },
+        "omitted": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "entityDelta": {
+      "type": "object",
+      "required": ["count", "added", "changed", "removed", "unchanged"],
+      "properties": {
+        "count": { "type": "integer", "minimum": 0, "description": "current total record count for this entity" },
+        "added": { "type": "array", "items": { "$ref": "#/$defs/record" } },
+        "changed": { "type": "array", "items": { "$ref": "#/$defs/record" } },
+        "removed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["key"],
+            "properties": {
+              "key": { "type": "string" },
+              "previous_fingerprint": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "unchanged": { "type": "integer", "minimum": 0 },
+        "summarized": { "type": "boolean" },
+        "omitted": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "compressedPayload": {
+      "type": "object",
+      "description": "Wire wrapper emitted with -Compress. data = base64(gzip(utf8(compact JSON envelope))).",
+      "required": ["content_encoding", "data"],
+      "properties": {
+        "content_encoding": { "const": "gzip+base64" },
+        "schema_version": { "type": "integer" },
+        "action": { "type": "string" },
+        "scan_id": { "type": "string" },
+        "uncompressed_bytes": { "type": "integer" },
+        "compressed_bytes": { "type": "integer" },
+        "data": { "type": "string" }
+      }
+    },
+    "record": {
+      "type": "object",
+      "required": ["key", "fingerprint", "observed_at"],
+      "properties": {
+        "key": { "type": "string", "description": "Natural key, unique within the entity type" },
+        "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "SHA-256 over the record's data fields (excludes key/fingerprint/observed_at)" },
+        "observed_at": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": true
+    },
+    "software": {
+      "allOf": [{ "$ref": "#/$defs/record" }],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": ["string", "null"] },
+        "vendor": { "type": ["string", "null"] },
+        "install_date": { "type": ["string", "null"], "description": "ISO date when parseable" },
+        "install_location": { "type": ["string", "null"] },
+        "size_bytes": { "type": ["integer", "null"] },
+        "architecture": { "type": ["string", "null"], "enum": ["x64", "x86", "arm64", "auto", null] },
+        "scope": { "enum": ["machine", "user"] },
+        "format": { "type": ["string", "null"], "description": "msi | exe | appx | deb | rpm | pkg | ..." },
+        "source": { "type": "string", "description": "registry | msi | appx | winget | choco | dpkg | rpm | brew | snap | flatpak" },
+        "product_code": { "type": ["string", "null"] }
+      }
+    },
+    "volume": {
+      "allOf": [{ "$ref": "#/$defs/record" }],
+      "properties": {
+        "drive_letter": { "type": ["string", "null"] },
+        "label": { "type": ["string", "null"] },
+        "device_type": { "type": ["integer", "null"] },
+        "file_system": { "type": ["string", "null"] },
+        "capacity_bytes": { "type": ["integer", "null"] },
+        "free_bytes": { "type": ["integer", "null"] },
+        "used_percent": { "type": ["number", "null"] },
+        "system_drive": { "type": "boolean" },
+        "encrypt_name": { "type": ["string", "null"], "description": "BitLocker | cryptsetup | FileVault" },
+        "encrypt_algo": { "type": ["string", "null"], "description": "AES_128 | AES_256 | XTS_AES_256 | HARDWARE_ENCRYPTION | ..." },
+        "encrypt_status": { "type": ["string", "null"], "description": "on | off | partially | unknown" },
+        "encrypt_type": { "type": ["string", "null"], "description": "hardware | software" }
+      }
+    },
+    "networkInterface": {
+      "allOf": [{ "$ref": "#/$defs/record" }],
+      "properties": {
+        "mac_address": { "type": ["string", "null"] },
+        "ip_addresses": { "type": "array", "items": { "type": "string" } },
+        "default_gateway": { "type": "array", "items": { "type": "string" } },
+        "dns_servers": { "type": "array", "items": { "type": "string" } },
+        "dhcp_enabled": { "type": "boolean" },
+        "link_speed_bps": { "type": ["integer", "null"] },
+        "mtu": { "type": ["integer", "null"] }
+      }
+    },
+    "antivirus": {
+      "allOf": [{ "$ref": "#/$defs/record" }],
+      "properties": {
+        "name": { "type": "string" },
+        "enabled": { "type": ["boolean", "null"] },
+        "up_to_date": { "type": ["boolean", "null"] },
+        "version": { "type": ["string", "null"] },
+        "definition_version": { "type": ["string", "null"] },
+        "product_state": { "type": ["string", "null"] }
+      }
+    },
+    "listeningPort": {
+      "allOf": [{ "$ref": "#/$defs/record" }],
+      "properties": {
+        "protocol": { "enum": ["tcp", "udp"] },
+        "address": { "type": "string" },
+        "port": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "family": { "enum": ["ipv4", "ipv6"] },
+        "pid": { "type": ["integer", "null"] },
+        "process": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

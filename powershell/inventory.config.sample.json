@@ -1,0 +1,16 @@
+{
+  "endpoint": "https://bifrost.example.com/api/endpoints/REPLACE-WITH-ENGAGEMENT-ID",
+  "apiKey": "REPLACE-WITH-PER-ENGAGEMENT-KEY",
+  "profile": "quick",
+  "includeAppx": true,
+  "includeProcesses": false,
+  "compress": true,
+  "delta": false,
+  "chunkBytes": 900000,
+  "maxRetries": 4,
+  "maxListItems": 2000,
+  "proxy": null,
+  "statePath": null,
+  "outputPath": null,
+  "dryRun": false
+}

@@ -1,0 +1,127 @@
+{
+  "schema_version": 2,
+  "scan_id": "00000000-0000-4000-8000-000000000001",
+  "base_scan_id": null,
+  "action": "snapshot",
+  "partial": true,
+  "host_identifier": {
+    "device_id": "00000000-0000-4000-8000-0000000000aa",
+    "device_id_source": "machine_guid",
+    "hardware_uuid": "00000000-0000-4000-8000-0000000000bb",
+    "machine_guid": "00000000-0000-4000-8000-0000000000aa",
+    "instance_id": "00000000-0000-4000-8000-0000000000cc",
+    "hostname": "EXAMPLE-HOST",
+    "fqdn": "example-host.example.local"
+  },
+  "calendar_time": "2026-01-01T00:00:00.0000000Z",
+  "unix_time": 1767225600,
+  "received_at": null,
+  "decorators": {
+    "username": "EXAMPLE\\user",
+    "upn": "EXAMPLE\\user",
+    "os_platform": "windows",
+    "is_elevated": false,
+    "hostname": "EXAMPLE-HOST"
+  },
+  "agent": {
+    "name": "sopdet",
+    "version": "0.0.0-sample",
+    "os": "windows",
+    "arch": "AMD64",
+    "elevated": false,
+    "profile": "quick",
+    "user": "EXAMPLE\\user"
+  },
+  "truncated": [],
+  "entity_errors": {},
+  "entities": {
+    "host": {
+      "count": 1,
+      "fingerprint": "aa2d85d821728f082cd68f568cf2d4ad1f4e933a0d0408f0bdc27af624509fda",
+      "records": [
+        {
+          "key": "host",
+          "hostname": "EXAMPLE-HOST",
+          "fqdn": "example-host.example.local",
+          "domain": "example.local",
+          "manufacturer": "Example Corp",
+          "model": "Example Laptop 1",
+          "chassis_type": "10",
+          "asset_tag": null,
+          "vm_system": "Physical",
+          "virtual_machine": false,
+          "current_user": "EXAMPLE\\user",
+          "last_boot_time": "2026-01-01T00:00:00Z",
+          "total_memory_bytes": 17179869184,
+          "fingerprint": "0f6a6c350b6888db9562f513f2ea38c686bd772739524a355083e873688c4e8d",
+          "observed_at": "2026-01-01T00:00:00Z"
+        }
+      ]
+    },
+    "os": {
+      "count": 1,
+      "fingerprint": "fd7adb07c02bc56829395d632d772f3b7d0b8c2d6291fc1ef0c87a857b4324ad",
+      "records": [
+        {
+          "key": "os",
+          "hostname": "EXAMPLE-HOST",
+          "name": "Microsoft Windows 11 Pro",
+          "full_name": "Windows 11 Pro",
+          "version": "10.0.26100",
+          "build": "26100",
+          "revision": 1000,
+          "platform": "windows",
+          "platform_like": "windows",
+          "arch": "64-bit",
+          "install_date": "2025-06-01T00:00:00Z",
+          "boot_time": "2026-01-01T00:00:00Z",
+          "locale": "en-US",
+          "language": "en-US",
+          "needs_reboot": false,
+          "secure_boot": 1,
+          "hypervisor_present": false,
+          "fingerprint": "383b2ca0daf64dd6266e3c3176f4ae90ee775192cefdf8097fdb360126d33d0b",
+          "observed_at": "2026-01-01T00:00:00Z"
+        }
+      ]
+    },
+    "software": {
+      "count": 2,
+      "fingerprint": "3a69606ebead9484e91d61843fced7a1516b78193919b07ecd3ae47b966aa062",
+      "records": [
+        {
+          "key": "machine|Example App|1.0.0",
+          "name": "Example App",
+          "version": "1.0.0",
+          "vendor": "Example Corp",
+          "install_date": "2025-07-01",
+          "install_location": "C:\\Program Files\\Example",
+          "size_bytes": 12345678,
+          "architecture": "x64",
+          "scope": "machine",
+          "format": "msi",
+          "source": "registry",
+          "product_code": "{00000000-0000-0000-0000-000000000000}",
+          "fingerprint": "9c9e66547a6c594876766034a6e4714e3fb845df05ec352b8dd7feadd1f737a7",
+          "observed_at": "2026-01-01T00:00:00Z"
+        },
+        {
+          "key": "machine|Placeholder Suite|2.3.4",
+          "name": "Placeholder Suite",
+          "version": "2.3.4",
+          "vendor": "Placeholder Ltd",
+          "install_date": "2025-08-15",
+          "install_location": "C:\\Program Files\\Placeholder",
+          "size_bytes": 9876543,
+          "architecture": "x64",
+          "scope": "machine",
+          "format": "exe",
+          "source": "registry",
+          "product_code": null,
+          "fingerprint": "5e99f6c4597a120718b4603bf771ec90c4e8f579f8d4c4af3605f08aa2877a22",
+          "observed_at": "2026-01-01T00:00:00Z"
+        }
+      ]
+    }
+  }
+}

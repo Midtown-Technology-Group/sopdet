@@ -1,0 +1,4 @@
+# One target per line. Comments and blank lines ignored.
+# Explicit hosts or IPs only - no CIDR ranges.
+example-ws-01
+10.0.0.25
