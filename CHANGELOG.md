@@ -7,6 +7,11 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ### Added
 
+- Provisioned Azure Artifact Signing: Basic-SKU account `mtg-sopdet-signing`
+  (`eastus`, endpoint `https://eus.codesigning.azure.net/`) in
+  `rg-sopdet-signing`, with the signed-in user granted the Artifact Signing
+  Identity Verifier role. Identity validation and certificate-profile creation
+  remain (portal). See [docs/signing.md](docs/signing.md).
 - Progress and branding: every run now emits a shared event stream rendered by
   a branded terminal reporter (banner, live progress meter, per-collector lines,
   summary; plain-log fallback when not a TTY or with `-quiet`) and, with `-ui`,
