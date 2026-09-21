@@ -7,6 +7,12 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ### Added
 
+- Progress and branding: every run now emits a shared event stream rendered by
+  a branded terminal reporter (banner, live progress meter, per-collector lines,
+  summary; plain-log fallback when not a TTY or with `-quiet`) and, with `-ui`,
+  by a loopback-only web page. The page is token-gated, needs no external
+  runtime, streams over Server-Sent Events, and replays the run for late
+  connections.
 - PowerShell collector now targets **Windows PowerShell 3.0** (Windows 7 SP1 /
   Server 2008 R2 with WMF 3+ through Windows 11): .NET 4.0-safe GZip constructor,
   registry firewall-profile fallback when `Get-NetFirewallProfile` is absent, and

@@ -6,10 +6,15 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"time"
 
 	"github.com/Midtown-Technology-Group/sopdet/internal/app"
 	"github.com/Midtown-Technology-Group/sopdet/internal/config"
+	"github.com/Midtown-Technology-Group/sopdet/internal/progress"
+	"github.com/Midtown-Technology-Group/sopdet/internal/term"
+	"github.com/Midtown-Technology-Group/sopdet/internal/ui"
 )
 
 // Version is overridden at build time with -ldflags "-X main.Version=...".
@@ -30,6 +35,10 @@ func main() {
 		incAppx    bool
 		incProcs   bool
 		showVer    bool
+		uiFlag     bool
+		uiPort     int
+		noBrowser  bool
+		quiet      bool
 	)
 	flag.StringVar(&cfgPath, "config", "", "path to inventory.config.json (default: alongside the binary)")
 	flag.StringVar(&endpoint, "endpoint", "", "Bifrost ingest endpoint URL")
@@ -44,6 +53,10 @@ func main() {
 	flag.BoolVar(&incAppx, "include-appx", false, "include Store/UWP packages")
 	flag.BoolVar(&incProcs, "include-processes", false, "include running processes")
 	flag.BoolVar(&showVer, "version", false, "print version and exit")
+	flag.BoolVar(&uiFlag, "ui", false, "serve a local browser progress page for this run")
+	flag.IntVar(&uiPort, "ui-port", 0, "fixed port for the progress page (0 = random)")
+	flag.BoolVar(&noBrowser, "no-browser", false, "do not auto-open the progress page")
+	flag.BoolVar(&quiet, "quiet", false, "suppress the banner and per-entity progress")
 	flag.Parse()
 
 	if showVer {
@@ -93,16 +106,52 @@ func main() {
 		}
 	})
 
-	res, err := app.Run(context.Background(), cfg, Version)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "run error: %v\n", err)
-		os.Exit(1)
-	}
-	if cfg.Endpoint != "" && !cfg.DryRun {
-		fmt.Fprintf(os.Stderr, "scan=%s action=%s delivered=%v chunks=%d spooled=%d\n",
-			res.Envelope.ScanID, res.Envelope.Action, res.Delivered, res.Chunks, res.Spooled)
-		if !res.Delivered {
-			os.Exit(3)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	tty := term.NewReporter(os.Stdout, term.Options{Version: Version, Quiet: quiet})
+	sinks := []progress.Sink{tty}
+
+	var srv *ui.Server
+	if uiFlag {
+		s, err := ui.New(ui.Options{Port: uiPort})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ui error: %v\n", err)
+		} else {
+			srv = s
+			sinks = append(sinks, srv)
+			go srv.Serve()
+			fmt.Fprintf(os.Stderr, "progress UI: %s\n", srv.URL())
+			if !noBrowser {
+				if err := ui.OpenBrowser(srv.URL()); err != nil {
+					fmt.Fprintln(os.Stderr, "open the URL above to watch progress")
+				}
+			}
 		}
 	}
+	rep := progress.Multi(sinks...)
+
+	res, err := app.Run(ctx, cfg, Version, rep)
+	if err != nil {
+		rep.Emit(progress.Event{Kind: progress.KindError, Message: err.Error()})
+		fmt.Fprintf(os.Stderr, "run error: %v\n", err)
+		linger(srv)
+		os.Exit(1)
+	}
+
+	linger(srv)
+
+	if cfg.Endpoint != "" && !cfg.DryRun && !res.Delivered {
+		os.Exit(3)
+	}
+}
+
+// linger keeps an open progress page alive briefly so the final state is
+// readable, then shuts the server down.
+func linger(srv *ui.Server) {
+	if srv == nil {
+		return
+	}
+	srv.WaitForViewers(context.Background(), 15*time.Minute, 6*time.Second)
+	_ = srv.Close()
 }

@@ -63,6 +63,33 @@ binary is loaded automatically.
 | `-dry-run` | collect only; never post |
 | `-proxy`, `-state` | proxy URL, delta state file |
 | `-include-appx`, `-include-processes` | extra entities |
+| `-ui` | serve a local branded progress page for this run |
+| `-ui-port` | fixed port for the page (default: random) |
+| `-no-browser` | do not auto-open the page |
+| `-quiet` | suppress the banner and per-entity progress |
+
+### Progress and branding
+
+Every run reports progress on the terminal: a branded banner, a live progress
+meter, one line per collector, and a completion summary. When stdout is not a
+terminal (or with `-quiet`) it degrades to plain log lines, so CI and captured
+output stay readable.
+
+`-ui` additionally serves a local web page with the same branding and a live
+collector view:
+
+```sh
+./bin/sopdet -profile quick -ui -dry-run
+```
+
+The page is bound to `127.0.0.1` on a random port and gated behind a one-time
+token in the URL; nothing is exposed off-host and no external runtime is
+required (no WebView2). Progress streams over Server-Sent Events, and late
+connections replay the run from the start, so opening the page after a scan
+still shows the full result. The page stays up briefly after the run so the
+summary can be read.
+
+![Sopdet progress page](docs/ui.png)
 
 ## Platform support
 

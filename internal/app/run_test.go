@@ -20,7 +20,7 @@ func TestRunMinimalDryRunValidates(t *testing.T) {
 	cfg.OutputPath = out
 	cfg.StatePath = filepath.Join(dir, "state.json")
 
-	res, err := Run(context.Background(), cfg, "test")
+	res, err := Run(context.Background(), cfg, "test", nil)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}

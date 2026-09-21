@@ -17,6 +17,7 @@ import (
 	"github.com/Midtown-Technology-Group/sopdet/internal/collect"
 	"github.com/Midtown-Technology-Group/sopdet/internal/config"
 	"github.com/Midtown-Technology-Group/sopdet/internal/ingest"
+	"github.com/Midtown-Technology-Group/sopdet/internal/progress"
 	"github.com/Midtown-Technology-Group/sopdet/internal/schema"
 	"github.com/Midtown-Technology-Group/sopdet/internal/state"
 )
@@ -30,8 +31,8 @@ type Result struct {
 	Summarized bool
 }
 
-// Run executes one inventory scan.
-func Run(ctx context.Context, cfg config.Config, agentVersion string) (Result, error) {
+// Run executes one inventory scan. rep may be nil.
+func Run(ctx context.Context, cfg config.Config, agentVersion string, rep *progress.Reporter) (Result, error) {
 	identity, elevated, err := buildIdentity()
 	if err != nil {
 		return Result{}, err
@@ -44,11 +45,32 @@ func Run(ctx context.Context, cfg config.Config, agentVersion string) (Result, e
 		MaxListItems:     cfg.MaxListItems,
 		IncludeAppx:      cfg.IncludeAppx,
 		IncludeProcesses: cfg.IncludeProcesses,
+		Events:           rep,
 	}
+
+	rep.Emit(progress.Event{
+		Kind:    progress.KindStart,
+		Stage:   "collect",
+		Message: fmt.Sprintf("scanning %s (%s profile)", identity.Hostname, cfg.Profile),
+		Data: map[string]any{
+			"hostname":  identity.Hostname,
+			"device_id": identity.DeviceID,
+			"source":    identity.DeviceIDSource,
+			"profile":   cfg.Profile,
+			"os":        collect.OSName(),
+			"elevated":  elevated,
+			"user":      currentUser(),
+			"version":   agentVersion,
+		},
+	})
+
 	entities, entityErrs := collect.Run(ctx, config.Level(cfg.Profile), sess)
 
 	truncated := []string{}
 	summarized := enforceBudget(entities, cfg.MaxPayloadBytes, &truncated)
+	if summarized || len(truncated) > 0 {
+		rep.Emit(progress.Event{Kind: progress.KindBudget, Stage: "budget", Data: map[string]any{"truncated": truncated}})
+	}
 
 	action := schema.ActionSnapshot
 	var base *string
@@ -123,6 +145,7 @@ func Run(ctx context.Context, cfg config.Config, agentVersion string) (Result, e
 			ScanID:     scanID,
 		})
 		if err != nil {
+			rep.Emit(progress.Event{Kind: progress.KindError, Stage: "deliver", Message: err.Error()})
 			return res, err
 		}
 		res.Delivered = ir.Delivered
@@ -138,6 +161,17 @@ func Run(ctx context.Context, cfg config.Config, agentVersion string) (Result, e
 			fmt.Println(string(compact))
 		}
 	}
+	rep.Emit(progress.Event{
+		Kind:  progress.KindDeliver,
+		Stage: "deliver",
+		OK:    progress.Bool(res.Delivered),
+		Data: map[string]any{
+			"delivered": res.Delivered,
+			"chunks":    res.Chunks,
+			"spooled":   res.Spooled,
+			"dry_run":   cfg.Endpoint == "" || cfg.DryRun,
+		},
+	})
 
 	if res.Delivered && !summarized {
 		snap := state.Snapshot(scanID, env.CalendarTime, env.Agent.Version, schema.FingerprintAlgo, entities)
@@ -145,6 +179,25 @@ func Run(ctx context.Context, cfg config.Config, agentVersion string) (Result, e
 			return res, err
 		}
 	}
+
+	rep.Emit(progress.Event{
+		Kind:  progress.KindDone,
+		Stage: "done",
+		Count: len(entities),
+		Index: len(entities),
+		Total: len(entities),
+		Data: map[string]any{
+			"scan_id":       scanID,
+			"action":        action,
+			"entities":      len(entities),
+			"entity_errors": len(entityErrs),
+			"delivered":     res.Delivered,
+			"chunks":        res.Chunks,
+			"spooled":       res.Spooled,
+			"truncated":     truncated,
+			"partial":       cfg.Profile != "full",
+		},
+	})
 	return res, nil
 }
 
