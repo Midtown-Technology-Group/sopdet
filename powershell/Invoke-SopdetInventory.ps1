@@ -309,9 +309,17 @@ function Get-Wire([object]$ChunkEnv, [bool]$UseCompress) {
 }
 
 function Invoke-IngestPost([string]$Url, [string]$ApiKey, [string]$Body, [string]$Proxy) {
-    $headers = @{ 'Content-Type' = 'application/json; charset=utf-8' }
+    $headers = @{}
     if ($ApiKey) { $headers['X-Bifrost-Key'] = $ApiKey }
-    $req = @{ Method = 'Post'; Uri = $Url; Headers = $headers; Body = [Text.Encoding]::UTF8.GetBytes($Body); TimeoutSec = 90; ErrorAction = 'Stop' }
+    $req = @{
+        Method      = 'Post'
+        Uri         = $Url
+        Headers     = $headers
+        ContentType = 'application/json; charset=utf-8'
+        Body        = [Text.Encoding]::UTF8.GetBytes($Body)
+        TimeoutSec  = 90
+        ErrorAction = 'Stop'
+    }
     if ($Proxy) { $req['Proxy'] = $Proxy }
     Invoke-RestMethod @req | Out-Null
 }

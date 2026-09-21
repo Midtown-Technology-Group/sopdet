@@ -15,6 +15,10 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
   in a backslash (Windows paths). The pretty payload now falls back to the
   compressed form, which is unaffected; validated on Server 2012 R2 (PS 4.0) and
   Server 2012 (PS 3.0).
+- Fix: legacy PowerShell 3.0 ignores a `Content-Type` supplied via
+  `-Headers` on `Invoke-RestMethod`, so the ingest POST was rejected and chunks
+  were spooled. The request now sets the `-ContentType` parameter, restoring
+  direct ingest from Server 2012 (PS 3.0) — 21 entities delivered.
 
 - Release workflow (`.github/workflows/release.yml`): tag `v*` builds all
   platforms, optionally signs the Windows binaries with Azure Artifact Signing
