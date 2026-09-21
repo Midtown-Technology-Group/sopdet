@@ -1,0 +1,60 @@
+name: unsigned-release
+
+# Rolling unsigned download channel. Every push to main rebuilds the public
+# (assessment) tier and updates a stable release, so download URLs under
+# /releases/latest/download/ never change. Gated by the ci workflow on main.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: unsigned-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+
+      - name: Build unsigned binaries
+        run: |
+          VERSION="0.1.0-unsigned.$(date -u +%Y%m%d).${GITHUB_SHA::7}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          make build cross VERSION="$VERSION"
+
+      - name: Stage public tier
+        run: bash scripts/publish.sh public
+
+      - name: Verify the Windows binary is present
+        run: test -f dist/public/sopdet-windows-amd64.exe
+
+      - name: Publish rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=unsigned-latest
+          NOTES="Rolling **unsigned** builds from \`main\` (commit ${GITHUB_SHA::7}, ${VERSION}).
+
+          Windows binaries are not code-signed: SmartScreen and some AV engines will warn.
+          App Control (WDAC)-enforced hosts additionally need the supplemental policy in docs/appcontrol.md.
+
+          Verify downloads against \`MANIFEST.sha256\`."
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/public/* --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$TAG" --notes "$NOTES" --latest --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" dist/public/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Sopdet — unsigned (rolling)" \
+              --notes "$NOTES" \
+              --latest
+          fi

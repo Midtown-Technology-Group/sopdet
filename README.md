@@ -127,6 +127,29 @@ shared across implementations — run the first Go scan as a fresh baseline.
 | `publish-public` | unsigned **and** Public Trust | prospects / assessment |
 | `publish-private` | Private Trust | managed fleet |
 
+### Download (unsigned)
+
+Every push to `main` republishes the public tier to the rolling
+[`unsigned-latest`](https://github.com/Midtown-Technology-Group/sopdet/releases/tag/unsigned-latest)
+release, so these URLs are stable:
+
+| Platform | Asset |
+|---|---|
+| Windows x64 | `sopdet-windows-amd64.exe` |
+| Windows arm64 | `sopdet-windows-arm64.exe` |
+| Linux x64 | `sopdet-linux-amd64` |
+| Linux arm64 | `sopdet-linux-arm64` |
+| macOS arm64 | `sopdet-darwin-arm64` |
+
+```text
+https://github.com/Midtown-Technology-Group/sopdet/releases/latest/download/<asset>
+https://github.com/Midtown-Technology-Group/sopdet/releases/download/unsigned-latest/<asset>
+```
+
+Checksums ship alongside as `MANIFEST.sha256`. These binaries are **unsigned**:
+Windows SmartScreen and some AV engines will warn, and WDAC-enforced hosts
+additionally need the supplemental policy in [docs/appcontrol.md](docs/appcontrol.md).
+
 ```sh
 make sign-public      # Windows signing host -> dist/signed-public
 make sign-private     # Windows signing host -> dist/signed-private

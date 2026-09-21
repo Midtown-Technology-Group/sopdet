@@ -7,6 +7,10 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ### Added
 
+- Rolling unsigned download channel: every push to `main` republishes the public
+  tier to a stable `unsigned-latest` GitHub release, giving permanent
+  `/releases/latest/download/<asset>` URLs (no SAS expiry). See the README
+  "Download (unsigned)" section.
 - Provisioned Azure Artifact Signing: Basic-SKU account `mtg-sopdet-signing`
   (`eastus`, endpoint `https://eus.codesigning.azure.net/`) in
   `rg-sopdet-signing`, with the signed-in user granted the Artifact Signing
