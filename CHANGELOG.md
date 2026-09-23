@@ -7,6 +7,16 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ### Added
 
+- Resident **serve mode scaffold** (`-serve`) for the Bifrost device control
+  plane (MTG Bifrost epic #818 / sopdet M3.1): `-bifrost-url`, `-device-key`
+  (env `SOPDET_DEVICE_KEY`), `-enroll-token` (env `SOPDET_ENROLLMENT_TOKEN`),
+  `-serve-state`, `-poll-interval`, `-work-dir`, and optional `-serve-config`
+  JSON (flags > env > file). First run exchanges a single-use `bfen_`
+  enrollment token at `POST /api/devices/enroll` for the `bfdk_` device key
+  and persists it (mode `0600`; installer DACL on Windows). Serve refuses to
+  start without a URL plus a key or enrollment token. Secrets never appear in
+  logs or errors. The claim/run loop arrives with M3.5; inventory mode is
+  unchanged.
 - Rolling unsigned download channel: every push to `main` republishes the public
   tier to a stable `unsigned-latest` GitHub release, giving permanent
   `/releases/latest/download/<asset>` URLs (no SAS expiry). See the README
