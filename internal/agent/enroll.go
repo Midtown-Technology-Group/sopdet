@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -32,7 +33,9 @@ type errorEnvelope struct {
 	} `json:"error"`
 }
 
-// ValidateBifrostURL requires an absolute http(s) URL with a host.
+// ValidateBifrostURL requires an absolute URL with a host. Credential-bearing
+// serve traffic (enrollment token, device key) must use https; plain http is
+// accepted only for loopback hosts (local development and test servers).
 func ValidateBifrostURL(raw string) error {
 	if raw == "" {
 		return fmt.Errorf("missing Bifrost URL (-bifrost-url / SOPDET_BIFROST_URL)")
@@ -47,7 +50,42 @@ func ValidateBifrostURL(raw string) error {
 	if u.Host == "" {
 		return fmt.Errorf("invalid Bifrost URL: missing host")
 	}
+	if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
+		return fmt.Errorf(
+			"refusing credential-bearing URL over plain http (use https; http is allowed only on loopback, got %q)",
+			u.Hostname(),
+		)
+	}
 	return nil
+}
+
+func isLoopbackHost(hostname string) bool {
+	if strings.EqualFold(hostname, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(hostname)
+	return ip != nil && ip.IsLoopback()
+}
+
+// enrollHTTPClient returns a client that refuses redirects so the one-time
+// enrollment POST body (and any future credential-bearing request) is never
+// re-sent to another scheme or host. The input client is shallow-copied;
+// its transport is reused.
+func enrollHTTPClient(client *http.Client) *http.Client {
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	clone := *client
+	prev := clone.CheckRedirect
+	clone.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if prev != nil {
+			if err := prev(req, via); err != nil {
+				return err
+			}
+		}
+		return fmt.Errorf("refusing redirect during enrollment (credential-bearing request must not follow redirects)")
+	}
+	return &clone
 }
 
 // Enroll exchanges a single-use enrollment token for the device key.
@@ -64,9 +102,7 @@ func Enroll(
 	if enrollmentToken == "" {
 		return DeviceState{}, fmt.Errorf("missing enrollment token")
 	}
-	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
-	}
+	client = enrollHTTPClient(client)
 
 	body, err := json.Marshal(map[string]string{
 		"enrollment_token": enrollmentToken,
@@ -107,8 +143,12 @@ func Enroll(
 	if _, err := uuid.Parse(parsed.DeviceID); err != nil {
 		return DeviceState{}, fmt.Errorf("enroll response device_id is not a UUID")
 	}
-	if !strings.HasPrefix(parsed.DeviceKey, deviceKeyPrefix) {
+	if !ValidDeviceKeyFormat(parsed.DeviceKey) {
 		return DeviceState{}, fmt.Errorf("enroll response device_key has unexpected format")
+	}
+	keyID, ok := ParseDeviceKeyID(parsed.DeviceKey)
+	if !ok || keyID != parsed.DeviceID {
+		return DeviceState{}, fmt.Errorf("enroll response device_key does not match device_id")
 	}
 	if parsed.Status != "" && parsed.Status != "active" {
 		return DeviceState{}, fmt.Errorf("enroll landed in unexpected status %q", parsed.Status)

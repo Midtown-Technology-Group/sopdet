@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -46,11 +48,8 @@ func PrepareServe(
 		return state, nil
 	}
 
-	persisted, err := LoadDeviceState(cfg.StatePath)
-	if err != nil {
-		return DeviceState{}, fmt.Errorf("refusing to serve: %w", err)
-	}
-	if persisted.DeviceKey != "" {
+	persisted, loadErr := LoadDeviceState(cfg.StatePath)
+	if loadErr == nil && persisted.DeviceKey != "" {
 		if !ValidDeviceKeyFormat(persisted.DeviceKey) {
 			return DeviceState{}, fmt.Errorf(
 				"refusing to serve: persisted device key has unexpected format",
@@ -69,6 +68,13 @@ func PrepareServe(
 	}
 
 	if cfg.EnrollmentToken != "" {
+		// The enrollment token is single-use: fail before spending it if the
+		// state file cannot be written (read-only dir, permissions, etc.).
+		if err := ensureStateWritable(cfg.StatePath); err != nil {
+			return DeviceState{}, fmt.Errorf(
+				"refusing to serve: %w (fix before enrolling; token not consumed)", err,
+			)
+		}
 		state, err := Enroll(ctx, baseURL, cfg.EnrollmentToken, client)
 		if err != nil {
 			return DeviceState{}, fmt.Errorf("refusing to serve: %w", err)
@@ -77,6 +83,10 @@ func PrepareServe(
 			return DeviceState{}, fmt.Errorf("refusing to serve: %w", err)
 		}
 		return state, nil
+	}
+
+	if loadErr != nil {
+		return DeviceState{}, fmt.Errorf("refusing to serve: %w", loadErr)
 	}
 
 	return DeviceState{}, fmt.Errorf(
@@ -97,6 +107,26 @@ func persistIfChanged(path string, state DeviceState) error {
 	if err := SaveDeviceState(path, state); err != nil {
 		return fmt.Errorf("refusing to serve: %w", err)
 	}
+	return nil
+}
+
+// ensureStateWritable verifies the state directory can be created and a
+// temporary file written, without touching the state file itself.
+func ensureStateWritable(path string) error {
+	if path == "" {
+		return fmt.Errorf("missing device state path")
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("state dir not writable: %w", err)
+	}
+	probe, err := os.CreateTemp(dir, ".probe-*")
+	if err != nil {
+		return fmt.Errorf("state dir not writable: %w", err)
+	}
+	probeName := probe.Name()
+	_ = probe.Close()
+	_ = os.Remove(probeName)
 	return nil
 }
 

@@ -54,7 +54,7 @@ func newEnrollServer(t *testing.T, token string, status int, payload string) *ht
 func TestEnrollSuccess(t *testing.T) {
 	token := enrollmentTokenPrefix + uuid.NewString() + "_" + testSecret
 	deviceID := uuid.NewString()
-	key := testDeviceKey()
+	key := deviceKeyPrefix + deviceID + "_" + testSecret
 	payload, _ := json.Marshal(map[string]string{
 		"device_id":  deviceID,
 		"device_key": key,
@@ -119,10 +119,13 @@ func TestEnrollNonJSONErrorDoesNotLeakBody(t *testing.T) {
 
 func TestEnrollRejectsBadResponses(t *testing.T) {
 	token := enrollmentTokenPrefix + uuid.NewString() + "_" + testSecret
+	mismatchedKey := deviceKeyPrefix + uuid.NewString() + "_" + testSecret
 	cases := []string{
 		`{"device_id":"","device_key":"","status":""}`,
 		`{"device_id":"` + uuid.NewString() + `","device_key":"nope","status":"active"}`,
-		`{"device_id":"` + uuid.NewString() + `","device_key":"bfdk_` + uuid.NewString() + `_` + testSecret + `","status":"disabled"}`,
+		`{"device_id":"` + uuid.NewString() + `","device_key":"bfdk_` + uuid.NewString() + `_short","status":"active"}`,
+		`{"device_id":"` + uuid.NewString() + `","device_key":"` + mismatchedKey + `","status":"active"}`,
+		`{"device_id":"` + uuid.NewString() + `","device_key":"` + deviceKeyPrefix + uuid.NewString() + `_` + testSecret + `","status":"disabled"}`,
 		`not-json`,
 	}
 	for i, payload := range cases {
@@ -134,6 +137,30 @@ func TestEnrollRejectsBadResponses(t *testing.T) {
 		if err != nil && strings.Contains(err.Error(), token) {
 			t.Errorf("case %d: leaked token: %v", i, err)
 		}
+	}
+}
+
+func TestEnrollRefusesRedirects(t *testing.T) {
+	token := enrollmentTokenPrefix + uuid.NewString() + "_" + testSecret
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		http.Redirect(w, r, "/elsewhere", http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := Enroll(context.Background(), srv.URL, token, srv.Client())
+	if err == nil {
+		t.Fatal("expected redirect refusal")
+	}
+	if !strings.Contains(err.Error(), "redirect") {
+		t.Errorf("error should mention redirect refusal, got: %v", err)
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Errorf("error leaked token: %v", err)
+	}
+	if hits != 1 {
+		t.Errorf("redirect must not be followed; hits = %d", hits)
 	}
 }
 
@@ -273,7 +300,7 @@ func TestPrepareServeDetectsURLMismatch(t *testing.T) {
 func TestPrepareServeEnrollsFirstRun(t *testing.T) {
 	token := enrollmentTokenPrefix + uuid.NewString() + "_" + testSecret
 	deviceID := uuid.NewString()
-	key := testDeviceKey()
+	key := deviceKeyPrefix + deviceID + "_" + testSecret
 	payload, _ := json.Marshal(map[string]string{
 		"device_id":  deviceID,
 		"device_key": key,
@@ -404,8 +431,51 @@ func TestValidateBifrostURL(t *testing.T) {
 	if err := ValidateBifrostURL("ftp://x"); err == nil {
 		t.Error("ftp should error")
 	}
+	if err := ValidateBifrostURL("http://example.com"); err == nil {
+		t.Error("plain http to non-loopback must be rejected for credential-bearing traffic")
+	}
+	if err := ValidateBifrostURL("http://127.0.0.1:8443/path/"); err != nil {
+		t.Errorf("loopback http should be allowed (dev/test): %v", err)
+	}
+	if err := ValidateBifrostURL("http://localhost/path/"); err != nil {
+		t.Errorf("localhost http should be allowed (dev/test): %v", err)
+	}
 	if err := ValidateBifrostURL("https://bifrost.example/path/"); err != nil {
 		t.Errorf("valid url rejected: %v", err)
+	}
+}
+
+func TestPrepareServeRefusesUnwritableStateBeforeEnrolling(t *testing.T) {
+	token := enrollmentTokenPrefix + uuid.NewString() + "_" + testSecret
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	// Make the state directory component a regular file so MkdirAll fails.
+	blocker := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := ServeConfig{
+		BifrostURL:      srv.URL,
+		EnrollmentToken: token,
+		StatePath:       filepath.Join(blocker, "serve.json"),
+	}
+	_, err := PrepareServe(context.Background(), cfg, srv.Client())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "token not consumed") {
+		t.Errorf("error should state the token was not consumed: %v", err)
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Errorf("error leaked token: %v", err)
+	}
+	if hits != 0 {
+		t.Errorf("enroll must not be attempted before the state path is writable; hits = %d", hits)
 	}
 }
 
