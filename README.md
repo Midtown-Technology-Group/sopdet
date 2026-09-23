@@ -10,6 +10,12 @@ implementations that share one JSON contract:
   no-admin collector and prospect-ready assessment package (launcher, config,
   schema, consent template, signing/fan-out tooling). PSScriptAnalyzer clean.
 
+The Go agent also has an optional resident **[`-serve` mode](#serve-mode-device-control-plane)**
+for the Bifrost device control plane: it holds a per-device key and (once the
+job loop lands) runs operator-authorized ad-hoc PowerShell. Inventory collection
+stays read-only; serve mode is a documented privilege change — see
+[Trust boundary](#trust-boundary).
+
 Named for **Sopdet**, the Egyptian star whose heliacal rising was the observed
 signal that timed the Nile flood — *read the signal, record the state.*
 
@@ -17,6 +23,7 @@ signal that timed the Nile flood — *read the signal, record the state.*
 
 ```
 cmd/sopdet/                 Go CLI entry point
+internal/agent/             serve mode: config, enrollment, runner (device control plane)
 internal/schema/            envelope types, canonical fingerprints, entity builder
 internal/collect/           collector interface, gopsutil base collectors,
                             Windows WMI + registry, Linux dpkg
@@ -90,6 +97,61 @@ still shows the full result. The page stays up briefly after the run so the
 summary can be read.
 
 ![Sopdet progress page](docs/ui.png)
+
+## Serve mode (device control plane)
+
+`sopdet -serve` prepares the resident agent identity for the Bifrost device
+control plane (ad-hoc PowerShell over a WebSocket-connected agent; platform
+contract: [`device-control-plane.md`](https://github.com/Midtown-Technology-Group/bifrost/blob/main/docs/architecture/device-control-plane.md)).
+**Current state:** config, single-use enrollment, and device-key persistence
+(M3.1); the claim/run loop arrives with M3.5.
+
+```sh
+# First run: mint a one-time enrollment token in Bifrost, then:
+sopdet -serve -bifrost-url https://bifrost.example.com -enroll-token bfen_<id>_<secret>
+
+# Subsequent runs reuse the persisted device key:
+sopdet -serve -bifrost-url https://bifrost.example.com
+```
+
+| Flag | Meaning |
+|---|---|
+| `-serve` | resident serve mode (skips inventory collection) |
+| `-bifrost-url` | Bifrost base URL (env `SOPDET_BIFROST_URL`); **https**, http only on loopback |
+| `-device-key` | raw device key (env `SOPDET_DEVICE_KEY`); secret — never logged |
+| `-enroll-token` | one-time `bfen_` enrollment token (env `SOPDET_ENROLLMENT_TOKEN`) |
+| `-serve-state` | device-state path (env `SOPDET_SERVE_STATE`; default under the user config dir) |
+| `-poll-interval` | HTTP claim poll interval while WS is down (env `SOPDET_POLL_INTERVAL`, default 10s) |
+| `-work-dir` | working directory for per-job script temp files (env `SOPDET_WORK_DIR`) |
+| `-serve-config` | optional JSON config (flags > env > file) |
+
+Serve refuses to start without a URL plus either a device key or an enrollment
+token. The one-time token is exchanged at `POST /api/devices/enroll`; the raw
+device key is returned once and persisted mode `0600` (the M5 installer adds a
+SYSTEM/Administrators DACL on Windows). Keys and tokens never appear in logs or
+error messages.
+
+### Trust boundary
+
+Inventory mode remains **read-only, no elevation** (see
+[`WHAT-IT-COLLECTS.md`](WHAT-IT-COLLECTS.md)). Serve mode changes the trust
+boundary: the agent becomes a **resident runner for operator-authorized
+PowerShell** on the device.
+
+- **Service identity:** LocalSystem by default on Windows (v1 has no alternate
+  identity and no `run_as` impersonation).
+- **Install / update / uninstall:** delivered and updated only via the M5 Ninja
+  bootstrap (pinned, checksum-verified binary); uninstall removes
+  binary/service/config/spool and leaves no key material. No in-agent
+  auto-update.
+- **Signing tiers:** [Private Trust](#distribution-tiers) for the managed
+  fleet and any hardened/WDAC endpoint; **unsigned + manifest is canary-only**
+  — a binary and a manifest from the same source are not authenticity proof.
+  See [`docs/signing.md`](docs/signing.md) and
+  [`docs/appcontrol.md`](docs/appcontrol.md).
+- **Data handling:** device key hashed at rest server-side, stored client-side
+  at `0600`/DACL; agent spool is `0600`/DACL and cleared after successful post;
+  script bodies and logs are never written to sopdet's own logs.
 
 ## Platform support
 
