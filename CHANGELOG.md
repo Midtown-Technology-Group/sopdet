@@ -17,6 +17,15 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
   start without a URL plus a key or enrollment token. Secrets never appear in
   logs or errors. The claim/run loop arrives with M3.5; inventory mode is
   unchanged.
+- **PowerShell runner** (`internal/agent.Runner`, M3.4): temp script file with
+  UTF-8 BOM, `powershell.exe -NoProfile -NonInteractive -File`, context
+  timeout with process-tree kill (taskkill `/T /F` on Windows), combined
+  stdout/stderr byte cap with truncation, size/interval log batching
+  (32 KiB / 500 ms), a globally monotonic log `seq`, and a **spawn-ordered
+  running notification** — `onStart` fires exactly once after a real
+  `cmd.Start` and before any log entry, so the platform can distinguish
+  safe reclaim from `lost` (feedback #1). Standalone-testable without
+  network; inventory mode unchanged.
 - Rolling unsigned download channel: every push to `main` republishes the public
   tier to a stable `unsigned-latest` GitHub release, giving permanent
   `/releases/latest/download/<asset>` URLs (no SAS expiry). See the README
