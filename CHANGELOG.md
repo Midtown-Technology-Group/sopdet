@@ -7,6 +7,19 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ### Added
 
+- **Device protocol HTTP client + durable result/log spool**
+  (`internal/agent/client.go`, M3.2 #839): `Heartbeat` (poll hint +
+  cooperative-cancel flag), `Claim` (frozen claim-response shape; 204 =
+  idle), `ReportRunning` (additive spawn-report route from Bifrost #874 —
+  feedback #1), fenced `PostLogs` (idempotent seq batches) and
+  `ReportResult`, all with retry/backoff on network/5xx errors (4xx never
+  retried), `X-Bifrost-Key` on every call, and structured error envelopes.
+  Fence/terminal rejections surface as `ErrFenced` — the agent accepts the
+  server verdict and **never re-runs locally**. Transient failures spool
+  payloads to disk (mode `0600`; installer DACL on Windows) with
+  `DrainSpool` on reconnect (fenced records are dropped, never replayed
+  against a terminal job) and `SweepSpool` enforcing the M0 7-day
+  retention window.
 - `scripts/Deploy-Sopdet.ps1`: Windows deployment entry point that installs the
   agent from the GitHub release, verifies SHA-256 against `MANIFEST.sha256`, and
   runs a one-shot scan or serve mode. Secrets read from `SOPDET_*` env vars so
