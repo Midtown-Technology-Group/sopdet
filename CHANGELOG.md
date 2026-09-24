@@ -7,6 +7,17 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ### Added
 
+- **Serve orchestration loop** (`internal/agent/loop.go`, M3.5 #842):
+  `sopdet -serve` now actually serves — WS hint or timed claim poll (server
+  poll hint honoured), **max one concurrent job**, heartbeat every 30s that
+  renews activity, drains the spool, and observes the cooperative-cancel
+  flag. Job outcomes follow the frozen rules: real-spawn `running` report
+  before logs, timeout/failed/succeeded results, **fenced rejections
+  accepted with no local re-run**, shutdown mid-job leaves `running` for
+  the server's `lost` policy (nothing posted), cooperative cancel kills the
+  local tree and posts `cancelled`. Startup sweeps stale spool files. The
+  `-serve` placeholder is replaced by the real loop; integration-tested
+  against a mock Bifrost lifecycle (httptest).
 - **WebSocket hint loop** (`internal/agent/ws.go`, M3.3 #840): derives
   `wss(s)://<base>/ws/connect` with **`Authorization: Bearer` header only**
   (no query credential, ever), explicitly subscribes to `device:{id}`,
