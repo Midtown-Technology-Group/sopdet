@@ -45,6 +45,7 @@ cp "$ROOT/schema/inventory.schema.json" "$dest/"
 for doc in WHAT-IT-COLLECTS.md README.md; do
   [ -f "$ROOT/$doc" ] && cp "$ROOT/$doc" "$dest/"
 done
+[ -f "$ROOT/scripts/Deploy-Sopdet.ps1" ] && cp "$ROOT/scripts/Deploy-Sopdet.ps1" "$dest/"
 
 ( cd "$dest" && find . -maxdepth 1 -type f ! -name MANIFEST.sha256 -printf '%P\n' | sort | while read -r name; do
     printf '%s  %s\n' "$(sha256sum "$name" | cut -d' ' -f1)" "$name"

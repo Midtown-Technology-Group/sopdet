@@ -7,6 +7,11 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ### Added
 
+- `scripts/Deploy-Sopdet.ps1`: Windows deployment entry point that installs the
+  agent from the GitHub release, verifies SHA-256 against `MANIFEST.sha256`, and
+  runs a one-shot scan or serve mode. Secrets read from `SOPDET_*` env vars so
+  NinjaOne need not pass them on the command line. Verified end-to-end on a
+  Server 2019 host (checksum match, scan delivered).
 - Resident **serve mode scaffold** (`-serve`) for the Bifrost device control
   plane (MTG Bifrost epic #818 / sopdet M3.1): `-bifrost-url`, `-device-key`
   (env `SOPDET_DEVICE_KEY`), `-enroll-token` (env `SOPDET_ENROLLMENT_TOKEN`),

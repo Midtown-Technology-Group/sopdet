@@ -212,6 +212,27 @@ Checksums ship alongside as `MANIFEST.sha256`. These binaries are **unsigned**:
 Windows SmartScreen and some AV engines will warn, and WDAC-enforced hosts
 additionally need the supplemental policy in [docs/appcontrol.md](docs/appcontrol.md).
 
+### Deploy on Windows
+
+`scripts/Deploy-Sopdet.ps1` is the NinjaOne-deployable installer. It downloads
+from the GitHub release, verifies the SHA-256 against `MANIFEST.sha256`, clears
+the mark-of-the-web, then reports the version, runs a one-shot scan, or starts
+serve mode:
+
+```powershell
+# verify + report only
+./scripts/Deploy-Sopdet.ps1 -DownloadOnly
+# one-shot scan
+./scripts/Deploy-Sopdet.ps1 -Endpoint <bifrost-endpoint> -ApiKey <key> -Profile quick -Compress
+# resident serve mode
+./scripts/Deploy-Sopdet.ps1 -Serve -BifrostUrl https://bifrost.example.com -EnrollToken bfen_<id>_<secret>
+```
+
+Secrets default from `SOPDET_API_KEY`, `SOPDET_ENROLLMENT_TOKEN`, and
+`SOPDET_DEVICE_KEY`, so a NinjaOne script can set the environment instead of
+exposing them on the command line. Point at another build with `-Url` /
+`-ManifestUrl`, or supply `-ExpectedSha256` directly.
+
 ```sh
 make sign-public      # Windows signing host -> dist/signed-public
 make sign-private     # Windows signing host -> dist/signed-private
