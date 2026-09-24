@@ -3,6 +3,7 @@ module github.com/Midtown-Technology-Group/sopdet
 go 1.27.1
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/google/uuid v1.6.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/shirou/gopsutil/v4 v4.26.8

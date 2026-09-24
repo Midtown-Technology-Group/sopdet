@@ -7,6 +7,14 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ### Added
 
+- **WebSocket hint loop** (`internal/agent/ws.go`, M3.3 #840): derives
+  `wss(s)://<base>/ws/connect` with **`Authorization: Bearer` header only**
+  (no query credential, ever), explicitly subscribes to `device:{id}`,
+  dispatches `device_job_available` hints to a callback (HTTP claim stays
+  authoritative), and reconnects with capped exponential backoff + jitter
+  honouring context cancellation. When the socket is down the heartbeat's
+  poll interval is the fallback — hint and poll both reach claim. New
+  dependency: `github.com/coder/websocket`.
 - **Device protocol HTTP client + durable result/log spool**
   (`internal/agent/client.go`, M3.2 #839): `Heartbeat` (poll hint +
   cooperative-cancel flag), `Claim` (frozen claim-response shape; 204 =
