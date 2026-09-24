@@ -208,6 +208,14 @@ func runServe(serveCfgPath string, flags agent.ServeConfig) int {
 		return 2
 	}
 	fmt.Fprintln(os.Stderr, agent.ServeReadyMessage(state, cfg.StatePath))
-	fmt.Fprintln(os.Stderr, "job loop not yet implemented (M3.5); device identity is ready")
+	srv, err := agent.NewServe(cfg, state)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "serve error: %v\n", err)
+		return 2
+	}
+	if err := srv.Run(ctx); err != nil && ctx.Err() == nil {
+		fmt.Fprintf(os.Stderr, "serve error: %v\n", err)
+		return 1
+	}
 	return 0
 }

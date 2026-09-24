@@ -74,6 +74,11 @@ type Runner struct {
 	BatchBytes int
 }
 
+// ErrRunningRejected is returned when the server refuses the spawn report
+// (fence violation or terminal job). The caller must NOT post a result or
+// re-run — the server owns the outcome.
+var ErrRunningRejected = errors.New("running notification rejected by server")
+
 // Defaults match the M0/M3 freeze (~500 ms or 32 KiB log batches).
 const (
 	DefaultBatchInterval = 500 * time.Millisecond
@@ -279,7 +284,7 @@ func (r *Runner) Run(
 		if err := onStart(); err != nil {
 			killTree(cmd)
 			_ = cmd.Wait()
-			return fail(fmt.Errorf("running notification rejected: %w", err))
+			return fail(fmt.Errorf("%w: %w", ErrRunningRejected, err))
 		}
 	}
 
