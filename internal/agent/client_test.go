@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -344,5 +345,134 @@ func TestSpoolRetentionSweep(t *testing.T) {
 	}
 	if _, err := os.Stat(fresh); err != nil {
 		t.Errorf("fresh spool file was removed: %v", err)
+	}
+}
+
+func TestOversizedClaimResponseIsNotSilentlyTruncated(t *testing.T) {
+	// A >512 KiB claim body must fail loudly: a silent truncation would
+	// break decode AFTER the server already claimed the job (then `lost`).
+	big := strings.Repeat("a", 600*1024)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"job_id":"11111111-1111-1111-1111-111111111111","claim_token":"22222222-2222-2222-2222-222222222222","script_content":"`))
+		w.Write([]byte(big))
+		w.Write([]byte(`"}`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t.TempDir())
+	c.BaseURL = srv.URL
+	_, err := c.Claim(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "truncated") {
+		t.Fatalf("expected explicit truncation error, got %v", err)
+	}
+}
+
+func TestDrainsSpooledLogsBeforeTerminalResult(t *testing.T) {
+	var healthy atomic.Bool
+	var order []string
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !healthy.Load() {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		mu.Lock()
+		if strings.HasSuffix(r.URL.Path, "/logs") {
+			order = append(order, "logs")
+		} else if strings.HasSuffix(r.URL.Path, "/result") {
+			order = append(order, "result")
+		}
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t.TempDir())
+	c.BaseURL = srv.URL
+
+	// Outage: log batch spools.
+	if err := c.PostLogs(context.Background(), "job-order", "tok", []LogBatchEntry{
+		{Seq: 1, Stream: "stdout", Text: "kept"},
+	}); err != nil {
+		t.Fatalf("expected spooled logs, got %v", err)
+	}
+	files, _ := filepath.Glob(filepath.Join(c.SpoolDir, "*.json"))
+	if len(files) != 1 {
+		t.Fatalf("expected spooled log record, got %v", files)
+	}
+
+	// Recovery: terminal result must arrive AFTER the drained logs.
+	healthy.Store(true)
+	if err := c.ReportResult(context.Background(), "job-order", ResultPayload{
+		ClaimToken: "tok", Status: "succeeded",
+	}); err != nil {
+		t.Fatalf("report result: %v", err)
+	}
+	mu.Lock()
+	got := append([]string{}, order...)
+	mu.Unlock()
+	if len(got) < 2 || got[0] != "logs" || got[len(got)-1] != "result" {
+		t.Errorf("delivery order = %v, want logs before result", got)
+	}
+	files, _ = filepath.Glob(filepath.Join(c.SpoolDir, "*.json"))
+	if len(files) != 0 {
+		t.Errorf("spool not drained: %v", files)
+	}
+}
+
+func TestDrainCountsEveryRetainedRecord(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t.TempDir())
+	c.BaseURL = srv.URL
+	for i := 1; i <= 3; i++ {
+		if err := c.Spool(&SpoolRecord{
+			Kind: "logs", JobID: "job-keep", ClaimToken: "tok",
+			Payload: map[string]any{
+				"claim_token": "tok",
+				"entries":     []any{map[string]any{"seq": i, "stream": "stdout", "text": "x"}},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pending, err := c.DrainSpool(context.Background())
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if pending != 3 {
+		t.Errorf("pending = %d, want 3 (every retained record counted)", pending)
+	}
+	files, _ := filepath.Glob(filepath.Join(c.SpoolDir, "*.json"))
+	if len(files) != 3 {
+		t.Errorf("records must survive the outage, got %d", len(files))
+	}
+}
+
+func TestBackoffHonoursContextCancellation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	// Default path: no injected Sleep, so waitBackoff selects on ctx.Done.
+	// Claim is used because PostLogs/ReportResult legitimately return nil
+	// after spooling a transient failure.
+	c := NewClient(srv.URL, "bfdk-test", t.TempDir())
+	c.MaxRetries = 3
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled: the first backoff must abort immediately
+
+	start := time.Now()
+	_, err := c.Claim(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("backoff ignored cancellation: took %v", elapsed)
 	}
 }

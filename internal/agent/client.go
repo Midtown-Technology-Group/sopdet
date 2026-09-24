@@ -39,7 +39,7 @@ var ErrFenced = errors.New("claim fenced by server (do not re-run locally)")
 const (
 	defaultMaxRetries = 4
 	defaultBaseDelay  = 500 * time.Millisecond
-	maxResponseBytes  = 64 << 10
+	maxResponseBytes  = 512 << 10 // largest legal claim response: 256 KiB script + 32 KiB params + envelope/margin
 	// spoolFileTTL mirrors the M0 retention freeze: unsent spool files are
 	// swept 7 days after mtime (they are useless once the server has long
 	// passed terminal on their job).
@@ -109,7 +109,8 @@ func NewClient(baseURL, deviceKey, spoolDir string) *Client {
 		SessionID:  uuid.NewString(),
 		MaxRetries: defaultMaxRetries,
 		HTTP:       &http.Client{Timeout: 30 * time.Second},
-		Sleep:      time.Sleep,
+		// Sleep stays nil in production: waitBackoff then honours context
+		// cancellation between retries. Tests inject a zero Sleep.
 		Jitter: func(d time.Duration) time.Duration {
 			if d <= 0 {
 				return 0
@@ -126,12 +127,23 @@ func trimBase(base string) string {
 	return base
 }
 
-func (c *Client) sleep(d time.Duration) {
+// waitBackoff sleeps between retries while honouring context cancellation
+// (so a shutdown does not sit through the full exponential backoff). The
+// injectable Sleep path is for tests and short-circuits ctx, matching the
+// ingest package's pattern.
+func (c *Client) waitBackoff(ctx context.Context, d time.Duration) error {
 	if c.Sleep != nil {
 		c.Sleep(d)
-		return
+		return nil
 	}
-	time.Sleep(d)
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (c *Client) jitter(d time.Duration) time.Duration {
@@ -171,7 +183,9 @@ func (c *Client) post(
 	for attempt := 0; attempt <= retries; attempt++ {
 		if attempt > 0 {
 			backoff := time.Duration(1<<uint(attempt-1)) * defaultBaseDelay
-			c.sleep(backoff + c.jitter(500*time.Millisecond))
+			if err := c.waitBackoff(ctx, backoff+c.jitter(500*time.Millisecond)); err != nil {
+				return err // context cancelled during backoff
+			}
 		}
 		var reader io.Reader
 		if body != nil {
@@ -193,11 +207,20 @@ func (c *Client) post(
 			continue
 		}
 
-		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 		resp.Body.Close()
 		if readErr != nil {
 			lastErr = readErr
 			continue
+		}
+		if len(raw) > maxResponseBytes {
+			// Explicit truncation detection: a silently-cut claim body would
+			// fail decode AFTER the server already claimed the job (it would
+			// then go `lost`). Fail loudly instead; the lease expiry makes
+			// the job safely reclaimable pre-spawn.
+			return fmt.Errorf(
+				"response truncated: body exceeds %d bytes", maxResponseBytes,
+			)
 		}
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -331,6 +354,11 @@ func (c *Client) ReportResult(
 	jobID string,
 	result ResultPayload,
 ) error {
+	// Drain first: any logs spooled during an outage must reach the server
+	// BEFORE the terminal result, or observation would silently lose them.
+	if c.SpoolDir != "" {
+		_, _ = c.DrainSpool(ctx) // best-effort; the result matters more
+	}
 	err := c.post(ctx, "/api/device/jobs/"+jobID+"/result", result, nil)
 	if err == nil {
 		return nil
@@ -458,7 +486,7 @@ func (c *Client) DrainSpool(ctx context.Context) (int, error) {
 	sort.Strings(paths) // creation-order approximation (nano timestamps in name)
 
 	pending := 0
-	for _, path := range paths {
+	for i, path := range paths {
 		rec, err := c.readSpoolRecord(path)
 		if err != nil {
 			// Corrupt record: quarantine is overkill; drop it (it contains
@@ -500,8 +528,9 @@ func (c *Client) DrainSpool(ctx context.Context) (int, error) {
 			os.Remove(path)
 			continue
 		}
-		// Transient: keep for the next drain.
-		pending++
+		// Transient: keep for the next drain; count EVERY retained record,
+		// not just the one we stopped on.
+		pending = len(paths) - i
 		break
 	}
 	return pending, nil
