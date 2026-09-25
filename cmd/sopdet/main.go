@@ -92,6 +92,13 @@ func main() {
 			PollInterval:    pollInterval,
 			WorkDir:         workDir,
 		}
+		// Under the Windows SCM the handler must register immediately;
+		// without StartServiceCtrlDispatcher the service start times out
+		// (~30s) and the process is reaped — the first canary run caught
+		// exactly that: one heartbeat, then STOPPED.
+		if handled, code := maybeRunAsService(serveCfgPath, flags); handled {
+			os.Exit(code)
+		}
 		os.Exit(runServe(serveCfgPath, flags))
 	}
 
@@ -187,10 +194,19 @@ func linger(srv *ui.Server) {
 	_ = srv.Close()
 }
 
-// runServe prepares the device identity for serve mode (M3.1 #838) and
-// reports readiness without ever printing secrets. The claim/run loop lands
-// with M3.5 (#842).
+// runServe runs resident serve mode in console context: Ctrl+C cancels the
+// root context. When started by the Windows SCM, maybeRunAsService takes
+// over instead (see service_windows.go) so the service reports its state.
 func runServe(serveCfgPath string, flags agent.ServeConfig) int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	return serveWithContext(ctx, serveCfgPath, flags)
+}
+
+// serveWithContext prepares the device identity (M3.1 #838), reports
+// readiness without ever printing secrets, and runs the claim/run loop
+// (M3.5) until ctx is cancelled.
+func serveWithContext(ctx context.Context, serveCfgPath string, flags agent.ServeConfig) int {
 	fileCfg, err := agent.LoadServeConfig(serveCfgPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "serve config error: %v\n", err)
@@ -198,9 +214,6 @@ func runServe(serveCfgPath string, flags agent.ServeConfig) int {
 	}
 	cfg := agent.ResolveServeConfig(fileCfg, flags, os.Getenv)
 	agent.ApplyServeDefaults(&cfg)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 
 	state, err := agent.PrepareServe(ctx, cfg, nil)
 	if err != nil {
