@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 type recordedReq struct {
@@ -166,6 +167,132 @@ func TestFullJobLifecycle(t *testing.T) {
 }
 
 func intPtr(i int) *int { return &i }
+
+// newHeartbeatServer serves heartbeat responses and captures the decoded
+// body of the last heartbeat (the heartbeat payload is string-only).
+func newHeartbeatServer(t *testing.T) (*httptest.Server, func() map[string]string) {
+	t.Helper()
+	var mu sync.Mutex
+	var last map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/device/heartbeat" {
+			m := map[string]string{}
+			if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+				m = nil // surfaced by the captured-value getter below
+			}
+			mu.Lock()
+			last = m
+			mu.Unlock()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"server_time":"2026-09-25T00:00:00Z","last_seen_at":null,"poll_interval_seconds":10,"cancel_requested":false}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() map[string]string {
+		mu.Lock()
+		defer mu.Unlock()
+		return last
+	}
+}
+
+func TestHeartbeatCarriesAgentVersion(t *testing.T) {
+	srv, last := newHeartbeatServer(t)
+	c := newTestClient(t.TempDir())
+	c.BaseURL = srv.URL
+	c.AgentVersion = "0.1.0-unsigned.20260925.abcdef1"
+
+	if _, err := c.Heartbeat(context.Background()); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	body := last()
+	if body == nil {
+		t.Fatal("no heartbeat body recorded")
+	}
+	if got := body["agent_version"]; got != c.AgentVersion {
+		t.Errorf("agent_version = %q, want %q", got, c.AgentVersion)
+	}
+	if got := body["agent_session_id"]; got != c.SessionID {
+		t.Errorf("agent_session_id = %q, want %q", got, c.SessionID)
+	}
+}
+
+func TestHeartbeatOmitsEmptyAgentVersion(t *testing.T) {
+	// A zero version must OMIT the field, not send "": the runbook check is
+	// "agent_version set", and an empty string would pass it while telling an
+	// operator nothing about the build. The same holds when sanitization
+	// removes everything (an all-control-character value).
+	cases := map[string]string{
+		"unset (dev build)":  "",
+		"only control chars": "\x00\n\r",
+	}
+	for name, version := range cases {
+		t.Run(name, func(t *testing.T) {
+			srv, last := newHeartbeatServer(t)
+			c := newTestClient(t.TempDir())
+			c.BaseURL = srv.URL
+			c.AgentVersion = version
+
+			if _, err := c.Heartbeat(context.Background()); err != nil {
+				t.Fatalf("heartbeat: %v", err)
+			}
+			body := last()
+			if body == nil {
+				t.Fatal("no heartbeat body recorded")
+			}
+			if got, ok := body["agent_version"]; ok {
+				t.Errorf("agent_version present for version %q: %q", version, got)
+			}
+			if body["agent_session_id"] == "" {
+				t.Errorf("session id missing")
+			}
+		})
+	}
+}
+
+func TestHeartbeatAgentVersionTruncatedToColumnWidth(t *testing.T) {
+	srv, last := newHeartbeatServer(t)
+	c := newTestClient(t.TempDir())
+	c.BaseURL = srv.URL
+	c.AgentVersion = strings.Repeat("v", 65) // 1 over the String(64) column
+
+	if _, err := c.Heartbeat(context.Background()); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	got := last()["agent_version"]
+	if n := utf8.RuneCountInString(got); n != 64 {
+		t.Errorf("agent_version length = %d runes, want exactly 64 (%q)", n, got)
+	}
+	if got != strings.Repeat("v", 64) {
+		t.Errorf("agent_version = %q, want the first 64 chars", got)
+	}
+}
+
+func TestSanitizeAgentVersion(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty stays empty", "", ""},
+		{"plain version untouched", "0.1.0-dev", "0.1.0-dev"},
+		{"control characters stripped", "1.2.3\r\n\x07dev", "1.2.3dev"},
+		{"tab stripped", "1.2.3\t", "1.2.3"},
+		{"exactly 64 kept", strings.Repeat("x", 64), strings.Repeat("x", 64)},
+		{"65 truncated", strings.Repeat("x", 65), strings.Repeat("x", 64)},
+		{"utf8 truncated on rune boundary", strings.Repeat("é", 70), strings.Repeat("é", 64)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitizeAgentVersion(tc.in)
+			if got != tc.want {
+				t.Errorf("sanitizeAgentVersion(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			if n := utf8.RuneCountInString(got); n > 64 {
+				t.Errorf("result is %d runes, exceeds the 64-wide column", n)
+			}
+		})
+	}
+}
 
 func TestRetryOnTransient5xx(t *testing.T) {
 	var attempts int32

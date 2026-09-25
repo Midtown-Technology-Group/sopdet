@@ -7,6 +7,17 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ### Added
 
+- **Heartbeat `agent_version` + `SOPDET_DISABLE_HINTS`** (device control
+  plane `Midtown-Technology-Group/bifrost#818`, poll-only drill `#852`):
+  every heartbeat now carries the build version (`main.Version`, ldflag-
+  overridden) as `agent_version`, sanitized (control characters stripped)
+  and truncated to the platform's 64-wide column; an empty version omits
+  the field instead of sending `""`, so the runbook's "agent_version set"
+  check reflects a real build. New environment-only knob
+  `SOPDET_DISABLE_HINTS` (`1`/`true`/`yes`/`on`, case-insensitive) resolves
+  `ServeConfig.EnableHints` to false, so the WebSocket hint channel does
+  not start and the agent claims over the HTTP poll alone for the M6.3
+  poll-only drill. Hints remain enabled by default.
 - **Serve orchestration loop** (`internal/agent/loop.go`, M3.5 #842):
   `sopdet -serve` now actually serves — WS hint or timed claim poll (server
   poll hint honoured), **max one concurrent job**, heartbeat every 30s that

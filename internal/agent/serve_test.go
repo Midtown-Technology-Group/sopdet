@@ -366,7 +366,11 @@ func TestResolveServeConfigPrecedence(t *testing.T) {
 	}
 	getenv := func(k string) string { return env[k] }
 	flagKey := "bfdk_" + uuid.NewString() + "_" + testSecret
-	flags := ServeConfig{DeviceKey: flagKey, PollInterval: 5 * time.Second}
+	flags := ServeConfig{
+		DeviceKey:    flagKey,
+		PollInterval: 5 * time.Second,
+		AgentVersion: "1.2.3-flag",
+	}
 
 	got := ResolveServeConfig(file, flags, getenv)
 	if got.BifrostURL != "https://env.example" {
@@ -380,6 +384,49 @@ func TestResolveServeConfigPrecedence(t *testing.T) {
 	}
 	if got.StatePath != "/tmp/file.json" || got.WorkDir != "/tmp/file-work" {
 		t.Errorf("file layer lost: %+v", got)
+	}
+	if got.AgentVersion != "1.2.3-flag" {
+		t.Errorf("agent version not carried from the flag layer: %q", got.AgentVersion)
+	}
+}
+
+func TestResolveServeConfigDisableHints(t *testing.T) {
+	cases := []struct {
+		env  string
+		want bool
+	}{
+		// Unset (and any non-truthy value) keeps the WS hint path enabled.
+		{"", true},
+		{"0", true},
+		{"false", true},
+		{"off", true},
+		{"no", true},
+		// The M6.3 poll-only drill (bifrost#852) selects "on" in any case.
+		{"1", false},
+		{"true", false},
+		{"TRUE", false},
+		{"True", false},
+		{"yes", false},
+		{"YES", false},
+		{"on", false},
+		{" on ", false},
+	}
+	for _, tc := range cases {
+		env := map[string]string{}
+		if tc.env != "" {
+			env["SOPDET_DISABLE_HINTS"] = tc.env
+		}
+		got := ResolveServeConfig(
+			ServeConfig{},
+			ServeConfig{},
+			func(k string) string { return env[k] },
+		)
+		if got.EnableHints != tc.want {
+			t.Errorf(
+				"SOPDET_DISABLE_HINTS=%q -> EnableHints=%v, want %v",
+				tc.env, got.EnableHints, tc.want,
+			)
+		}
 	}
 }
 

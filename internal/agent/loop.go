@@ -28,16 +28,23 @@ type Serve struct {
 	Hints          *WSHintClient
 	Wake           chan struct{}
 	HeartbeatEvery time.Duration
-	EnableHints    bool
+	// EnableHints gates the WebSocket hint goroutine (Run). It mirrors
+	// ServeConfig.EnableHints: true by default, false when the M6.3
+	// poll-only drill sets SOPDET_DISABLE_HINTS.
+	EnableHints bool
 
 	mu        sync.Mutex
 	curCancel context.CancelFunc
 }
 
 // NewServe builds the orchestration around an already-prepared identity.
+// The heartbeat's agent_version comes from cfg.AgentVersion (main.Version),
+// and cfg.EnableHints decides whether the WebSocket hint channel runs at all
+// (SOPDET_DISABLE_HINTS resolves it false for the M6.3 poll-only drill).
 func NewServe(cfg ServeConfig, state DeviceState) (*Serve, error) {
 	spoolDir := filepath.Join(filepath.Dir(cfg.StatePath), "spool")
 	client := NewClient(cfg.BifrostURL, state.DeviceKey, spoolDir)
+	client.AgentVersion = cfg.AgentVersion
 	runner := &Runner{} // WorkDir is per-job (RunRequest.WorkDir)
 	s := &Serve{
 		Config:         cfg,
@@ -45,7 +52,7 @@ func NewServe(cfg ServeConfig, state DeviceState) (*Serve, error) {
 		Runner:         runner,
 		Wake:           make(chan struct{}, 1),
 		HeartbeatEvery: 30 * time.Second,
-		EnableHints:    true,
+		EnableHints:    cfg.EnableHints,
 	}
 	hints, err := NewWSHintClient(client, func() {
 		select {

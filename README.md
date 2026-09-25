@@ -124,6 +124,7 @@ sopdet -serve -bifrost-url https://bifrost.example.com
 | `-poll-interval` | HTTP claim poll interval while WS is down (env `SOPDET_POLL_INTERVAL`, default 10s) |
 | `-work-dir` | working directory for per-job script temp files (env `SOPDET_WORK_DIR`) |
 | `-serve-config` | optional JSON config (flags > env > file) |
+| `SOPDET_DISABLE_HINTS` | **env only**: truthy (`1`, `true`, `yes`, `on`, case-insensitive) disables the WebSocket hint channel so the agent runs poll-only (M6.3 drill, [bifrost#852](https://github.com/Midtown-Technology-Group/bifrost/issues/852)) |
 
 Serve refuses to start without a URL plus either a device key or an enrollment
 token. The one-time token is exchanged at `POST /api/devices/enroll`; the raw

@@ -12,7 +12,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 )
@@ -90,14 +92,19 @@ type ResultPayload struct {
 // Client talks to the Bifrost device protocol over HTTP. It has no
 // knowledge of PowerShell: the serve loop wires the Runner into it (M3.5).
 type Client struct {
-	BaseURL    string
-	DeviceKey  string
-	SpoolDir   string
-	SessionID  string
-	MaxRetries int
-	HTTP       *http.Client
-	Sleep      func(time.Duration)
-	Jitter     func(time.Duration) time.Duration
+	BaseURL   string
+	DeviceKey string
+	SpoolDir  string
+	SessionID string
+	// AgentVersion is the build version reported on every heartbeat as
+	// `agent_version` (the device row column, String(64)). It is sanitized
+	// (control characters stripped, truncated to 64) at send time; an empty
+	// value omits the field entirely rather than posting "".
+	AgentVersion string
+	MaxRetries   int
+	HTTP         *http.Client
+	Sleep        func(time.Duration)
+	Jitter       func(time.Duration) time.Duration
 }
 
 // NewClient builds a client with per-process agent session identity.
@@ -275,17 +282,53 @@ func fencedOr(err error) error {
 	return err
 }
 
-// Heartbeat posts the session heartbeat and returns the poll hint plus the
-// cooperative-cancel flag for the job this session owns (may be none).
+// Heartbeat posts the session heartbeat (plus the sanitized build version so
+// the device row's agent_version can be verified by the runbook) and returns
+// the poll hint plus the cooperative-cancel flag for the job this session
+// owns (may be none).
 func (c *Client) Heartbeat(ctx context.Context) (*HeartbeatStatus, error) {
-	var out HeartbeatStatus
-	err := c.post(ctx, "/api/device/heartbeat", map[string]string{
+	payload := map[string]string{
 		"agent_session_id": c.SessionID,
-	}, &out)
+	}
+	// A zero version omits the key instead of sending "": the runbook check
+	// is "agent_version set", and an empty string would satisfy it while
+	// telling an operator nothing.
+	if v := sanitizeAgentVersion(c.AgentVersion); v != "" {
+		payload["agent_version"] = v
+	}
+	var out HeartbeatStatus
+	err := c.post(ctx, "/api/device/heartbeat", payload, &out)
 	if err != nil {
 		return nil, fencedOr(err)
 	}
 	return &out, nil
+}
+
+// agentVersionColumnWidth matches the platform's agent_version column
+// (String(64)). Truncation is by rune so a multi-byte version string stays
+// valid UTF-8 after the cut.
+const agentVersionColumnWidth = 64
+
+// sanitizeAgentVersion strips control characters (they must never reach a
+// database column or a log line) and truncates to the agent_version column
+// width. The empty string passes through unchanged.
+func sanitizeAgentVersion(v string) string {
+	if v == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(v))
+	for _, r := range v {
+		if unicode.IsControl(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	runes := []rune(b.String())
+	if len(runes) > agentVersionColumnWidth {
+		runes = runes[:agentVersionColumnWidth]
+	}
+	return string(runes)
 }
 
 // Claim fetches the next job. Returns (nil, nil) when the server has no
