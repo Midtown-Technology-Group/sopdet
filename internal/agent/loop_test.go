@@ -380,3 +380,81 @@ func TestServeCooperativeCancelPostsCancelled(t *testing.T) {
 		t.Errorf("results = %+v, want one cancelled", payloads)
 	}
 }
+
+// TestServeClaimsWithHintsDisabled wires a Serve through the real
+// construction path (ResolveServeConfig -> NewServe) with the M6.3 poll-only
+// drill knob set, then proves claims still flow over the HTTP poll alone.
+func TestServeClaimsWithHintsDisabled(t *testing.T) {
+	mock := &mockBifrost{
+		claims: []ClaimedJob{scriptedJob("pollonly", "echo hello")},
+	}
+	srv := httptest.NewServer(mock.handler())
+	defer srv.Close()
+
+	cfg := ResolveServeConfig(ServeConfig{
+		BifrostURL:   srv.URL,
+		StatePath:    filepath.Join(t.TempDir(), "serve.json"),
+		PollInterval: 50 * time.Millisecond,
+		WorkDir:      t.TempDir(),
+		AgentVersion: "0.1.0-drill",
+	}, ServeConfig{}, func(k string) string {
+		if k == "SOPDET_DISABLE_HINTS" {
+			return "1"
+		}
+		return ""
+	})
+	ApplyServeDefaults(&cfg)
+
+	state := DeviceState{
+		BifrostURL: srv.URL,
+		DeviceID:   uuid.NewString(),
+		DeviceKey:  testDeviceKey(),
+	}
+	s, err := NewServe(cfg, state)
+	if err != nil {
+		t.Fatalf("NewServe: %v", err)
+	}
+	if s.EnableHints {
+		t.Fatalf("SOPDET_DISABLE_HINTS=1 must resolve EnableHints=false")
+	}
+	if s.Client.AgentVersion != "0.1.0-drill" {
+		t.Errorf("agent version not threaded into the client: %q", s.Client.AgentVersion)
+	}
+	s.Client.Sleep = func(time.Duration) {}
+	s.Client.Jitter = func(time.Duration) time.Duration { return 0 }
+	s.Client.MaxRetries = 1
+	s.Runner.PowerShellPath = fakeShell(t, "echo hi")
+	s.Runner.BatchInterval = 10 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+
+	mock.waitFor(t, "result", 10*time.Second)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+
+	mock.mu.Lock()
+	payloads := append([]ResultPayload{}, mock.results...)
+	mock.mu.Unlock()
+	if len(payloads) != 1 || payloads[0].Status != "succeeded" {
+		t.Errorf("results = %+v, want one succeeded", payloads)
+	}
+	// The poll timer keeps claiming after the terminal job without hints.
+	claims := 0
+	for _, r := range mock.snapshot() {
+		if r == "claim" {
+			claims++
+		}
+	}
+	if claims < 2 {
+		t.Errorf("expected repeated claim polls with hints disabled, got %d", claims)
+	}
+}

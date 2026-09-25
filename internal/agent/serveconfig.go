@@ -8,11 +8,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
 // ServeConfig is the fully resolved configuration for `-serve`.
 // Precedence when resolving: flags > environment > serve config file.
+//
+// The WebSocket hint path is on by default. For the M6.3 poll-only drill
+// (Midtown-Technology-Group/bifrost#852) set the environment variable
+// SOPDET_DISABLE_HINTS to a truthy value (`1`, `true`, `yes`, `on`,
+// case-insensitive): ResolveServeConfig then resolves EnableHints to false
+// and the agent claims over the HTTP poll alone.
 type ServeConfig struct {
 	// BifrostURL is the base URL of the Bifrost instance (https://...).
 	BifrostURL string
@@ -28,6 +35,15 @@ type ServeConfig struct {
 	PollInterval time.Duration
 	// WorkDir is the working directory for per-job temp script files.
 	WorkDir string
+	// AgentVersion is the build version reported on every heartbeat (the
+	// platform's `agent_version` device column, String(64)). It is wired
+	// from main.Version (ldflag-overridden at build time), so it is not
+	// operator-configurable: the config-file layer cannot carry it and only
+	// the flag layer passes it through resolution.
+	AgentVersion string
+	// EnableHints selects the WebSocket hint channel; the struct doc records
+	// the SOPDET_DISABLE_HINTS poll-only drill knob that resolves it false.
+	EnableHints bool
 }
 
 // serveFile mirrors the optional JSON serve config file (camelCase, matching
@@ -106,6 +122,11 @@ func ResolveServeConfig(
 			out.PollInterval = d
 		}
 	}
+	// M6.3 poll-only drill knob (Midtown-Technology-Group/bifrost#852):
+	// a truthy SOPDET_DISABLE_HINTS turns the WebSocket hint path off so
+	// claims flow through the HTTP poll alone. Hints are on unless the
+	// drill is explicitly requested.
+	out.EnableHints = !truthyEnv(getenv("SOPDET_DISABLE_HINTS"))
 
 	if flags.BifrostURL != "" {
 		out.BifrostURL = flags.BifrostURL
@@ -125,7 +146,22 @@ func ResolveServeConfig(
 	if flags.PollInterval > 0 {
 		out.PollInterval = flags.PollInterval
 	}
+	if flags.AgentVersion != "" {
+		out.AgentVersion = flags.AgentVersion
+	}
 	return out
+}
+
+// truthyEnv reports whether a drill-style environment knob selects "on":
+// 1, true, yes, or on (case-insensitive, surrounding space ignored).
+// Anything else — including an unset variable — is off.
+func truthyEnv(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // ApplyServeDefaults fills zero-value fields with their M0 defaults.

@@ -91,6 +91,8 @@ func main() {
 			StatePath:       serveStatePath,
 			PollInterval:    pollInterval,
 			WorkDir:         workDir,
+			// ldflag-overridden build version -> heartbeat agent_version.
+			AgentVersion: Version,
 		}
 		// Under the Windows SCM the handler must register immediately;
 		// without StartServiceCtrlDispatcher the service start times out
