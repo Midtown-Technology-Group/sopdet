@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"context"
 	"os/exec"
 	"strconv"
 	"syscall"
@@ -25,7 +26,12 @@ func killTree(cmd *exec.Cmd) {
 	}
 	pid := cmd.Process.Pid
 	// taskkill /T removes the whole tree; fall back to a direct kill.
-	killer := exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(pid))
+	// taskkill can itself hang on a wedged tree — Run must never block on
+	// it, so bound it (bifrost#951: an unbounded wait here would suppress
+	// the job's terminal report).
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultExitGrace)
+	defer cancel()
+	killer := exec.CommandContext(ctx, "taskkill", "/T", "/F", "/PID", strconv.Itoa(pid))
 	if killer.Run() != nil {
 		_ = cmd.Process.Kill()
 	}

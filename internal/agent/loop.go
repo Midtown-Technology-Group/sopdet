@@ -32,6 +32,10 @@ type Serve struct {
 	// ServeConfig.EnableHints: true by default, false when the M6.3
 	// poll-only drill sets SOPDET_DISABLE_HINTS.
 	EnableHints bool
+	// Logf receives operator-visible serve diagnostics (nil: stderr). Used
+	// for report-path events that must never be silent, such as a terminal
+	// report the server refused (bifrost#951 follow-up).
+	Logf func(format string, a ...any)
 
 	mu        sync.Mutex
 	curCancel context.CancelFunc
@@ -87,6 +91,28 @@ func (s *Serve) cancelCurrent() {
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+}
+
+// logf emits a serve diagnostic without ever panicking on a nil Logf.
+func (s *Serve) logf(format string, a ...any) {
+	if s.Logf != nil {
+		s.Logf(format, a...)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "serve: "+format+"\n", a...)
+}
+
+// reportTerminal posts the job's terminal result. A fenced rejection is the
+// server's accepted verdict (already terminal), not a loss; every other
+// failure must at least be visible in the agent log — a silently dropped
+// terminal report leaves the job `running` until the server watchdog
+// reaps it (bifrost#951).
+func (s *Serve) reportTerminal(ctx context.Context, job *ClaimedJob, payload ResultPayload) {
+	payload.ClaimToken = job.ClaimToken
+	if err := s.Client.ReportResult(ctx, job.JobID, payload); err != nil &&
+		!errors.Is(err, ErrFenced) {
+		s.logf("terminal report for job %s failed: %v", job.JobID, err)
 	}
 }
 
@@ -209,14 +235,15 @@ func (s *Serve) process(serveCtx context.Context, job *ClaimedJob) {
 		if errors.Is(runErr, ErrRunningRejected) {
 			// Fence at spawn report: the server owns the outcome
 			// (terminal/lost). Never re-run, never post.
+			s.logf("spawn report rejected for job %s; leaving the outcome to the server: %v",
+				job.JobID, runErr)
 			return
 		}
 		// Preparation/spawn failure: the script never started, so a
 		// `failed` report is honest and safe.
-		_ = s.Client.ReportResult(serveCtx, job.JobID, ResultPayload{
-			ClaimToken: job.ClaimToken,
-			Status:     "failed",
-			Error:      runErr.Error(),
+		s.reportTerminal(serveCtx, job, ResultPayload{
+			Status: "failed",
+			Error:  runErr.Error(),
 		})
 		return
 	}
@@ -231,17 +258,15 @@ func (s *Serve) process(serveCtx context.Context, job *ClaimedJob) {
 	// Cooperative cancel: jobCtx was cancelled while serve lives — the
 	// runner killed the tree on the heartbeat flag; report cancelled.
 	if jobCtx.Err() != nil {
-		_ = s.Client.ReportResult(serveCtx, job.JobID, ResultPayload{
-			ClaimToken: job.ClaimToken,
-			Status:     "cancelled",
-			Error:      "cooperative cancel observed via heartbeat",
+		s.reportTerminal(serveCtx, job, ResultPayload{
+			Status: "cancelled",
+			Error:  "cooperative cancel observed via heartbeat",
 		})
 		return
 	}
 
 	payload := ResultPayload{
-		ClaimToken: job.ClaimToken,
-		Truncated:  outcome.Truncated,
+		Truncated: outcome.Truncated,
 	}
 	ms := outcome.Duration.Milliseconds()
 	payload.DurationMS = &ms
@@ -261,6 +286,8 @@ func (s *Serve) process(serveCtx context.Context, job *ClaimedJob) {
 	}
 
 	// ReportResult spools transient failures; a fenced rejection is accepted
-	// (server already terminal) — either way this job ends here.
-	_ = s.Client.ReportResult(serveCtx, job.JobID, payload)
+	// (server already terminal) — either way this job ends here, and any
+	// non-fenced rejection is surfaced by reportTerminal instead of being
+	// dropped silently (bifrost#951).
+	s.reportTerminal(serveCtx, job, payload)
 }
