@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -228,5 +230,94 @@ func TestRunnerMissingInterpreterFails(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), "powershell not found") {
 		t.Fatalf("expected interpreter error, got: %v", err)
+	}
+}
+
+// TestRunnerReturnsWhileDescendantHoldsPipes pins the bifrost#951 wedge:
+// the script finished and the direct child exited, but a backgrounded
+// descendant that escaped the tree kill still holds the stdout/stderr pipe
+// write ends. Run must return within the exit grace so the serve loop can
+// post the terminal report — never block on pipe EOF forever while
+// heartbeats keep the job pinned server-side.
+func TestRunnerReturnsWhileDescendantHoldsPipes(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	pidFile := filepath.Join(t.TempDir(), "orphan.pid")
+	// set -m (bash): background jobs get their own process group, so the
+	// post-exit group kill cannot reach the orphan — mirroring taskkill /T
+	// on Windows, which cannot enumerate the children of an already-exited
+	// parent.
+	path := filepath.Join(t.TempDir(), "fake-powershell")
+	body := fmt.Sprintf(
+		"#!/usr/bin/env bash\nset -m\nsleep 60 &\necho $! > %q\necho done\nexit 0\n",
+		pidFile,
+	)
+	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		raw, err := os.ReadFile(pidFile)
+		if err != nil {
+			return
+		}
+		var pid int
+		if _, err := fmt.Sscanf(string(raw), "%d", &pid); err == nil && pid > 0 {
+			if p, err := os.FindProcess(pid); err == nil {
+				_ = p.Kill()
+			}
+		}
+	})
+
+	var mu sync.Mutex
+	var entries []LogEntry
+	type runResult struct {
+		out RunOutcome
+		err error
+	}
+	finished := make(chan runResult, 1)
+	go func() {
+		out, err := (&Runner{
+			PowerShellPath: path,
+			BatchInterval:  20 * time.Millisecond,
+			ExitGrace:      500 * time.Millisecond,
+		}).Run(
+			context.Background(),
+			testRequest(t.TempDir(), "x"),
+			nil,
+			func(batch []LogEntry) {
+				mu.Lock()
+				entries = append(entries, batch...)
+				mu.Unlock()
+			},
+		)
+		finished <- runResult{out, err}
+	}()
+
+	// The orphan holds the pipe for 60s; before the fix Run blocked on
+	// wg.Wait() for the whole span (no terminal report could ever be sent).
+	var res runResult
+	select {
+	case res = <-finished:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("Run still blocked 10s after the child exited — " +
+			"the serve loop would never post the terminal report (bifrost#951)")
+	}
+	if res.err != nil {
+		t.Fatalf("Run: %v", res.err)
+	}
+	if res.out.ExitCode != 0 {
+		t.Errorf("exit = %d, want 0 (the child succeeded)", res.out.ExitCode)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var sawDone bool
+	for _, e := range entries {
+		if strings.Contains(e.Text, "done") {
+			sawDone = true
+		}
+	}
+	if !sawDone {
+		t.Errorf("pre-exit output lost when the drain was bounded: %+v", entries)
 	}
 }

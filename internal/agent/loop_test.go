@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -378,6 +380,113 @@ func TestServeCooperativeCancelPostsCancelled(t *testing.T) {
 	mock.mu.Unlock()
 	if len(payloads) != 1 || payloads[0].Status != "cancelled" {
 		t.Errorf("results = %+v, want one cancelled", payloads)
+	}
+}
+
+// TestServeSurfacesRejectedTerminalReport covers the bifrost#951 residual
+// question "could a terminal report have been lost without a trace?": the
+// server mis-responds to the result POST (FastAPI-style 422 validation
+// body, not an error envelope). The loop must surface that rejection in the
+// serve log instead of discarding it silently, must not spool a
+// non-retryable rejection, and must keep serving.
+func TestServeSurfacesRejectedTerminalReport(t *testing.T) {
+	var claims, results int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/device/heartbeat":
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"server_time":"2026-09-28T00:00:00Z","poll_interval_seconds":10,"cancel_requested":false}`))
+		case r.URL.Path == "/api/device/jobs/claim":
+			if atomic.AddInt32(&claims, 1) == 1 {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(scriptedJob("rejected", "echo x"))
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case strings.HasSuffix(r.URL.Path, "/running"):
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"job_id":"x","status":"running"}`))
+		case strings.HasSuffix(r.URL.Path, "/logs"):
+			w.WriteHeader(http.StatusNoContent)
+		case strings.HasSuffix(r.URL.Path, "/result"):
+			atomic.AddInt32(&results, 1)
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			w.Write([]byte(`{"detail":[{"loc":["body","error"],"msg":"value should be a valid string"}]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := ServeConfig{
+		BifrostURL:   "http://placeholder",
+		StatePath:    filepath.Join(t.TempDir(), "serve.json"),
+		PollInterval: 50 * time.Millisecond,
+		WorkDir:      t.TempDir(),
+	}
+	ApplyServeDefaults(&cfg)
+	spoolDir := filepath.Join(t.TempDir(), "spool")
+	client := NewClient("http://placeholder", testDeviceKey(), spoolDir)
+	client.Sleep = func(time.Duration) {}
+	client.Jitter = func(time.Duration) time.Duration { return 0 }
+	client.MaxRetries = 1
+
+	var mu sync.Mutex
+	var logged []string
+	s := &Serve{
+		Config: cfg,
+		Client: client,
+		Runner: &Runner{
+			PowerShellPath: fakeShell(t, "echo hi"),
+			BatchInterval:  10 * time.Millisecond,
+		},
+		Wake:           make(chan struct{}, 1),
+		HeartbeatEvery: 20 * time.Millisecond,
+		EnableHints:    false,
+		Logf: func(format string, a ...any) {
+			mu.Lock()
+			logged = append(logged, fmt.Sprintf(format, a...))
+			mu.Unlock()
+		},
+	}
+	wireBase(s, srv.URL)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for atomic.LoadInt32(&results) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if atomic.LoadInt32(&results) == 0 {
+		cancel()
+		<-done
+		t.Fatal("terminal result POST was never attempted")
+	}
+	time.Sleep(100 * time.Millisecond) // let reportTerminal surface the 422
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned %v", err)
+	}
+
+	mu.Lock()
+	msgs := append([]string{}, logged...)
+	mu.Unlock()
+	var surfaced bool
+	for _, m := range msgs {
+		if strings.Contains(m, "terminal report") && strings.Contains(m, "422") {
+			surfaced = true
+		}
+	}
+	if !surfaced {
+		t.Errorf("rejected terminal report not surfaced in serve log: %v", msgs)
+	}
+	if files, _ := filepath.Glob(filepath.Join(spoolDir, "*.json")); len(files) != 0 {
+		t.Errorf("non-retryable rejection must not be spooled: %v", files)
+	}
+	if atomic.LoadInt32(&claims) < 2 {
+		t.Errorf("serve loop stopped claiming after the rejection: claims=%d", claims)
 	}
 }
 

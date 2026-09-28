@@ -72,6 +72,12 @@ type Runner struct {
 	BatchInterval time.Duration
 	// BatchBytes is the max buffered bytes before emission (default 32KiB).
 	BatchBytes int
+	// ExitGrace bounds every wait Run performs once the child is expected
+	// to be finished: kill/reap of the tree and the stdout/stderr EOF
+	// drain (default DefaultExitGrace). It exists so Run can NEVER hang
+	// after the script exited — a wedged Run suppresses the job's terminal
+	// report while heartbeats keep the job pinned (bifrost#951).
+	ExitGrace time.Duration
 }
 
 // ErrRunningRejected is returned when the server refuses the spawn report
@@ -85,6 +91,11 @@ const (
 	DefaultBatchBytes    = 32 * 1024
 	// utf8BOM keeps Windows PowerShell 5.1 from misreading non-ASCII scripts.
 	utf8BOM = "\xEF\xBB\xBF"
+	// DefaultExitGrace bounds the post-exit waits in Run (kill, reap, pipe
+	// EOF drain). Normal EOF arrives as soon as the last child-side pipe
+	// handle closes, so the grace only costs time for an already-wedged
+	// tree. See Runner.ExitGrace.
+	DefaultExitGrace = 5 * time.Second
 )
 
 // runState is shared by both stream pumps: one seq counter, one byte budget.
@@ -232,6 +243,10 @@ func (r *Runner) Run(
 	if req.Timeout <= 0 {
 		req.Timeout = 120 * time.Second
 	}
+	grace := r.ExitGrace
+	if grace <= 0 {
+		grace = DefaultExitGrace
+	}
 
 	scriptPath, err := writeTempScript(req.WorkDir, req.ScriptContent)
 	if err != nil {
@@ -320,12 +335,19 @@ func (r *Runner) Run(
 		// Timeout or caller cancellation: kill the tree so Wait returns and
 		// every pipe write-end is released.
 		killTree(cmd)
-		waitErr = <-waitDone
+		select {
+		case waitErr = <-waitDone:
+		case <-time.After(grace):
+			// The tree refused to die within the grace. Run keeps going
+			// anyway: once runCtx is done the outcome below never consults
+			// waitErr, and the serve loop must reach its terminal report
+			// (bifrost#951).
+		}
 	}
 	// Sweep grandchildren that outlived the direct child and still hold
 	// pipe write-ends (otherwise the pumps never see EOF).
 	killTree(cmd)
-	wg.Wait()
+	waitPipes(&wg, grace, stdoutR, stderrR)
 	close(stop)
 	outPump.flush()
 	errPump.flush()
@@ -355,6 +377,39 @@ func (r *Runner) Run(
 		outcome.ExitCode = 0
 	}
 	return outcome, nil
+}
+
+// waitPipes waits for both pump readers to observe EOF, but never longer
+// than grace after the child finished. A descendant that outlived the child
+// and still holds inherited pipe write-ends would otherwise block Run
+// forever and swallow the job's terminal report (bifrost#951: on Windows
+// children inherit the parent's std handles, and taskkill /T cannot
+// enumerate the children of an already-exited parent). On expiry the read
+// ends are closed — os.File.Close on a Windows pipe cancels pending reads
+// (internal/poll -> CancelIoEx) — and a reader that still cannot return is
+// abandoned: it exits on its own once the holder releases the pipe.
+func waitPipes(wg *sync.WaitGroup, grace time.Duration, readers ...*os.File) {
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	if waitWithin(done, grace) {
+		return
+	}
+	for _, f := range readers {
+		f.Close()
+	}
+	waitWithin(done, grace) // second expiry: abandon the stuck readers
+}
+
+// waitWithin reports whether ch fired before d elapsed.
+func waitWithin(ch <-chan struct{}, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ch:
+		return true
+	case <-timer.C:
+		return false
+	}
 }
 
 // pumpReader copies until EOF, flushing on size thresholds; the ticker
