@@ -5,7 +5,7 @@ Guidance for AI agents and humans working in `Midtown-Technology-Group/sopdet`.
 Sopdet is a **read-only device inventory** tool with two implementations that
 share one JSON contract, plus an optional resident **serve mode** (device
 control plane) documented in the trust boundary below. Read `README.md`,
-`codex-swarm.hints.json`, and `schema/inventory.schema.json` before changing
+`schema/inventory.schema.json` before changing
 behavior.
 
 ## Non-negotiables
@@ -85,4 +85,4 @@ output against the schema; compile-only is not enough for WMI work.
 - Prefer depth: small interfaces over meaningful behavior; do not add
   pass-through layers.
 - Update `CHANGELOG.md` for user-visible changes.
-- Coordination state (claims, spool, state files) stays out of the repo.
+- Runtime spool and device state files stay out of the repo.
