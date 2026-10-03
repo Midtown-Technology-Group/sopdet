@@ -181,6 +181,11 @@ func TestParseSchtasksCSV(t *testing.T) {
 	if len(gotErr) != 1 || gotErr[0].TaskName != `\T` || gotErr[0].Status != "Ready" {
 		t.Fatalf("error lines should be skipped: %+v", gotErr)
 	}
+	withBOM := "\ufeff\"TaskName\",\"Status\"\n\"\\T\",\"Ready\"\n"
+	gotBOM := parseSchtasksCSV(withBOM)
+	if len(gotBOM) != 1 || gotBOM[0].TaskName != `\T` {
+		t.Fatalf("BOM header should parse: %+v", gotBOM)
+	}
 }
 
 func TestParseNetLocalgroup(t *testing.T) {

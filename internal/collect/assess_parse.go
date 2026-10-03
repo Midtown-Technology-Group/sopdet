@@ -379,7 +379,13 @@ func parseSchtasksCSV(out string) []ScheduledTaskRow {
 	}
 	header := -1
 	for i, rec := range records {
-		if len(rec) > 0 && strings.EqualFold(strings.Trim(strings.TrimSpace(rec[0]), `"`), "taskname") {
+		if len(rec) == 0 {
+			continue
+		}
+		// schtasks prepends a UTF-8 BOM to redirected output; strip it
+		// (plus quotes/space) before matching the header column.
+		first := strings.Trim(strings.TrimSpace(rec[0]), "\"\ufeff \t")
+		if strings.EqualFold(first, "taskname") {
 			header = i
 			break
 		}

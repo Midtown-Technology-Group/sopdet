@@ -782,6 +782,19 @@ function Get-PhysicalDiskRecord {
 function Get-NetworkRecord {
     $out = @()
     try {
+        $mtuByIndex = @{}
+        try {
+            $nameToIndex = @{}
+            foreach ($a in (Get-CimData 'Win32_NetworkAdapter')) {
+                if ($a.NetConnectionID) { $nameToIndex[[string]$a.NetConnectionID] = [int]$a.Index }
+            }
+            foreach ($line in (@(& netsh interface ipv4 show subinterfaces 2>$null))) {
+                if ($line -match '^\s*(\d+)\s+\d+\s+\d+\s+\d+\s+(.+)$') {
+                    $ifname = $Matches[2].Trim()
+                    if ($nameToIndex.ContainsKey($ifname)) { $mtuByIndex[$nameToIndex[$ifname]] = [int]$Matches[1] }
+                }
+            }
+        } catch { Write-Verbose "ignored: $_" }
         $out = Get-CimData 'Win32_NetworkAdapterConfiguration' -Filter 'IPEnabled=True' | ForEach-Object {
             $speed = $null; $adapterStatus = $null
             try {
@@ -804,7 +817,7 @@ function Get-NetworkRecord {
                 dhcp_enabled     = [bool]$_.DHCPEnabled
                 dhcp_server      = $_.DHCPServer
                 link_speed_bps   = $speed
-                mtu              = $null
+                mtu              = $mtuByIndex[$_.Index]
                 status           = $adapterStatus
                 up               = [bool]($adapterStatus -eq 2)
                 service_name     = $_.ServiceName
@@ -1229,9 +1242,9 @@ function Get-FirewallRecord {
     }
     if (@($out).Count -eq 0) {
         $profiles = @(
-            @{ Key = 'DomainProfile'; Name = 'domain' },
-            @{ Key = 'StandardProfile'; Name = 'private' },
-            @{ Key = 'PublicProfile'; Name = 'public' }
+            @{ Key = 'DomainProfile'; Name = 'Domain' },
+            @{ Key = 'StandardProfile'; Name = 'Private' },
+            @{ Key = 'PublicProfile'; Name = 'Public' }
         )
         foreach ($p in $profiles) {
             $path = "HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\$($p.Key)"
@@ -1447,7 +1460,18 @@ function Get-ArpRecord {
 function Get-ScheduledTaskRecord {
     $out = @()
     try {
-        $lines = @(& schtasks /query /fo csv /v 2>$null | Where-Object { $_ -match '^\s*"' })
+        # schtasks prepends a UTF-8 BOM to redirected output (seen raw as
+        # U+FEFF or CP1252 mojibake); strip it, then locate the header row
+        # by its TaskName first column like the Go collector.
+        $bomRe = '^(' + [char]0xFEFF + '|' + [char]0xEF + [char]0xBB + [char]0xBF + ')+'
+        $csv = @((& schtasks /query /fo csv /v 2>$null) | ForEach-Object { $_ -replace $bomRe, '' } | Where-Object { $_ -match '"' })
+        $h = -1
+        for ($i = 0; $i -lt $csv.Count; $i++) {
+            $first = ($csv[$i] -split '","')[0].Trim().Trim('"').Trim()
+            if ($first -ieq 'taskname') { $h = $i; break }
+        }
+        if ($h -lt 0 -or ($h + 1) -ge $csv.Count) { return @($out) }
+        $lines = @($csv[$h..($csv.Count - 1)])
         if ($lines.Count -lt 2) { return @($out) }
         $rows = @($lines | ConvertFrom-Csv)
         $hasName = $false
@@ -1474,7 +1498,7 @@ function Get-ScheduledTaskRecord {
                     next_run_time = $r.'Next Run Time'; source = 'schtasks'
                 }
             }
-        } else {
+        } elseif ($lines.Count -ge 2) {
             foreach ($line in $lines[1..($lines.Count - 1)]) {
                 $cols = @($line -split '","' | ForEach-Object { $_.Trim().Trim('"') })
                 if ($cols.Count -lt 1 -or [string]::IsNullOrEmpty($cols[0]) -or -not $cols[0].StartsWith('\')) { continue }

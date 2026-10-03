@@ -8,8 +8,9 @@
 //     on per-record field names; legacy entities report field drift as
 //     warnings until their contracts are unified.
 //
-// Membership-ephemeral entities (processes, listening_ports, arp_neighbors)
-// are warn-only: two back-to-back scans can legitimately disagree there.
+// Membership-ephemeral entities (processes, listening_ports, arp_neighbors,
+// monitors) are warn-only: two back-to-back scans can legitimately disagree
+// there.
 // network_interfaces joins on MAC address (the implementations key NICs
 // differently) and requires PS ⊆ Go, since Go also enumerates non-IP
 // interfaces the PowerShell collector skips.
@@ -27,10 +28,13 @@ import (
 )
 
 // warnEntities skip key/field comparison; count drift only warns.
+// Displays join this set: attach/detach races between two back-to-back
+// scans (RDP/virtual displays settling) make membership ephemeral.
 var warnEntities = map[string]bool{
 	"processes":       true,
 	"listening_ports": true,
 	"arp_neighbors":   true,
+	"monitors":        true,
 }
 
 // strictFieldEntities shipped with unified cross-implementation contracts;

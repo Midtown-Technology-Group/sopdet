@@ -22,6 +22,9 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
   the PowerShell collector), SMART `predictive_failure` on physical disks,
   `quser` sessions in `logged_on_users`, and `install_source`/
   `uninstall_string` on software records.
+- Firewall profile keys now use canonical case (`firewall:Domain`,
+  `firewall:Private`, `firewall:Public`) in both implementations; older Go
+  baselines churn these three records once.
 - PowerShell backfills: `raid_controllers` and `antivirus_threats` (were
   Go-only), NIC `status`/`up`, disk `predictive_failure`, and a monitor
   serial fallback. Agent version 0.4.0.
