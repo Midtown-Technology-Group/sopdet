@@ -38,6 +38,17 @@ func PlatformCollectors(_ *Session) []Collector {
 		macTPMCollector{},
 		macLocalUserCollector{},
 		macListeningPortCollector{},
+		macWifiCollector{},
+		macProxyCollector{},
+		macRouteCollector{},
+		macArpCollector{},
+		macScheduledTaskCollector{},
+		macRemoteAccessCollector{},
+		macPrivilegedMemberCollector{},
+		macPasswordPolicyCollector{},
+		macUpdateHealthCollector{},
+		macReliabilityCollector{},
+		macRuntimeCollector{},
 	}
 }
 

@@ -47,6 +47,21 @@ jobs:
       - name: cross-compile
         run: make cross
 
+  # Real Windows execution: both implementations collect back-to-back and the
+  # equivalence gate fails the build when their envelopes diverge. Also runs
+  # go vet natively so Windows-only files get vetted (cross vet skips them).
+  equivalence:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+      - name: vet (native Windows coverage)
+        run: go vet ./...
+      - name: equivalence (Go vs PowerShell envelopes)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-equivalence.ps1
+
   # Real macOS execution: build native and validate a collected envelope.
   macos:
     runs-on: macos-latest

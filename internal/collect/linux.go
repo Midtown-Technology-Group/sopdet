@@ -32,6 +32,17 @@ func PlatformCollectors(_ *Session) []Collector {
 		linuxLocalUserCollector{},
 		linuxListeningPortCollector{},
 		linuxSoftwareCollector{},
+		linuxWifiCollector{},
+		linuxProxyCollector{},
+		linuxRouteCollector{},
+		linuxArpCollector{},
+		linuxScheduledTaskCollector{},
+		linuxRemoteAccessCollector{},
+		linuxPrivilegedMemberCollector{},
+		linuxPasswordPolicyCollector{},
+		linuxUpdateHealthCollector{},
+		linuxReliabilityCollector{},
+		linuxRuntimeCollector{},
 	}
 }
 

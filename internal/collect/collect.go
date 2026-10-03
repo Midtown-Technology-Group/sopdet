@@ -117,7 +117,7 @@ func runCollector(c Collector, ctx context.Context, s *Session) (recs []schema.R
 
 func looksGated(msg string) bool {
 	m := strings.ToLower(msg)
-	for _, s := range []string{"access is denied", "access denied", "not authorized", "privilege", "requires elevation", "0x80070005"} {
+	for _, s := range []string{"access is denied", "access denied", "not authorized", "not allowed", "privilege", "requires elevation", "0x80070005"} {
 		if strings.Contains(m, s) {
 			return true
 		}

@@ -23,6 +23,10 @@ var volatileKeys = map[string]struct{}{
 	"ram_free_bytes":             {},
 	"ram_usage_percent":          {},
 	"estimated_charge_remaining": {},
+	"signal_percent":             {},
+	"signal_dbm":                 {},
+	"neighbor_state":             {},
+	"days_remaining":             {},
 }
 
 // Fingerprint returns the stable content hash of a record. encoding/json sorts

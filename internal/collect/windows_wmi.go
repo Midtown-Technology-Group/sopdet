@@ -53,6 +53,21 @@ func wmiCollectors() []Collector {
 		winProcessCollector{},
 		winRaidCollector{},
 		winVolumesCollector{},
+		winNetworkProfileCollector{},
+		winWifiCollector{},
+		winProxyCollector{},
+		winRouteCollector{},
+		winArpCollector{},
+		winScheduledTaskCollector{},
+		winRemoteAccessCollector{},
+		winPrivilegedMemberCollector{},
+		winPasswordPolicyCollector{},
+		winUpdateHealthCollector{},
+		winReliabilityCollector{},
+		winMachineCertCollector{},
+		winUSBHistoryCollector{},
+		winRuntimeCollector{},
+		winRecoveryCollector{},
 	}
 }
 
@@ -605,6 +620,7 @@ func (winPhysicalDiskCollector) Collect(_ context.Context, _ *Session) ([]schema
 			"manufacturer": r.Manufacturer, "serial_number": r.SerialNumber, "size_bytes": int64(r.Size),
 			"interface_type": r.InterfaceType, "media_type": r.MediaType, "firmware": r.FirmwareRevision,
 			"partition_count": r.Partitions, "bytes_per_sector": r.BytesPerSector, "status": r.Status,
+			"predictive_failure": strings.Contains(strings.ToLower(r.Status), "pred"),
 		})
 	}
 	return out, nil
@@ -777,16 +793,36 @@ type winLoggedOnUserCollector struct{}
 
 func (winLoggedOnUserCollector) Name() string { return "logged_on_users" }
 func (winLoggedOnUserCollector) Level() int   { return levelQuick }
-func (winLoggedOnUserCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
+func (winLoggedOnUserCollector) Collect(ctx context.Context, _ *Session) ([]schema.Record, error) {
+	out := []schema.Record{}
+	seen := map[string]bool{}
 	var cs []struct{ UserName string }
 	if err := wmi.Query("SELECT UserName FROM Win32_ComputerSystem", &cs); err != nil {
 		return nil, err
 	}
-	if len(cs) == 0 || cs[0].UserName == "" {
-		return []schema.Record{}, nil
+	if len(cs) > 0 && cs[0].UserName != "" {
+		user := cs[0].UserName
+		short := user
+		if i := strings.LastIndex(user, `\`); i >= 0 {
+			short = user[i+1:]
+		}
+		seen[strings.ToLower(short)] = true
+		out = append(out, schema.Record{"key": "session:" + user, "user_name": user, "session_type": "console", "logon_time": nil, "sid": nil})
 	}
-	user := cs[0].UserName
-	return []schema.Record{{"key": "session:" + user, "user_name": user, "session_type": "console", "logon_time": nil, "sid": nil}}, nil
+	// quser adds RDP and service sessions; absent on Home editions.
+	if qout, err := assessExec(ctx, "quser"); err == nil {
+		for _, q := range parseQuser(qout) {
+			if seen[strings.ToLower(q.User)] {
+				continue
+			}
+			seen[strings.ToLower(q.User)] = true
+			out = append(out, schema.Record{
+				"key": "session:" + q.User + ":" + q.Session, "user_name": q.User,
+				"session_type": q.Session, "logon_time": q.LogonTime, "sid": nil,
+			})
+		}
+	}
+	return out, nil
 }
 
 type winMonitorCollector struct{}
