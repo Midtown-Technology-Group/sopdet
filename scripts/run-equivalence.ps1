@@ -47,7 +47,9 @@ try {
     try {
         # Unbudgeted runs: the size budget would summarize large entities and
         # break record-count parity. Go reads the budget from config only.
-        @{ maxPayloadBytes = 20000000 } | ConvertTo-Json -Compress | Out-File -FilePath $cfgPath -Encoding utf8 -Force
+        # Write without a BOM (Out-File -Encoding utf8 emits one on PS 5.1).
+        $cfgJson = (@{ maxPayloadBytes = 20000000 } | ConvertTo-Json -Compress)
+        [IO.File]::WriteAllText($cfgPath, $cfgJson, (New-Object Text.UTF8Encoding($false)))
 
         Invoke-Native 'build Go agent' { & go build -o $goExe ./cmd/sopdet }
         Invoke-Collect 'Go collect (full + includes)' {
