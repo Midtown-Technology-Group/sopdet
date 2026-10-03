@@ -28,7 +28,7 @@ jobs:
           go-version: '1.27.x'
       - name: cross-compile
         run: make build cross VERSION="${TAG#v}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bin
           path: bin/
@@ -82,13 +82,13 @@ jobs:
         if: env.AZURE_CLIENT_ID != ''
         shell: pwsh
         run: ./scripts/sign-artifacts.ps1 -Profile Private -OutDir dist/signed-private -File bin/sopdet-windows-amd64.exe -File bin/sopdet-windows-arm64.exe
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: env.AZURE_CLIENT_ID != ''
         with:
           name: signed-public
           path: dist/signed-public/
           if-no-files-found: ignore
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: env.AZURE_CLIENT_ID != ''
         with:
           name: signed-private
@@ -142,7 +142,7 @@ jobs:
               --generate-notes
           fi
       - name: Private tier (workflow artifact only)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: private-tier
           path: dist/private/
