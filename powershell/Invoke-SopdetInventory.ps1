@@ -49,7 +49,7 @@ if ($configPath -and (Test-Path $configPath)) {
 }
 
 $AgentName = 'Sopdet'
-$AgentVersion = '0.3.0'
+$AgentVersion = '0.4.0'
 $SchemaVersion = 2
 $script:Now = (Get-Date).ToUniversalTime()
 $script:NowIso = $script:Now.ToString('o')
@@ -58,7 +58,8 @@ $script:Entities = [ordered]@{}
 $script:EntityErrors = [ordered]@{}
 $script:VolatileFields = @(
     'free_bytes', 'used_percent', 'percent_remaining', 'run_time_minutes',
-    'uptime_seconds', 'ram_free_bytes', 'ram_usage_percent', 'estimated_charge_remaining'
+    'uptime_seconds', 'ram_free_bytes', 'ram_usage_percent', 'estimated_charge_remaining',
+    'signal_percent', 'signal_dbm', 'neighbor_state', 'days_remaining'
 )
 
 $ProfileLevel = @{ minimal = 0; quick = 1; full = 2 }
@@ -152,7 +153,7 @@ function Add-Collected {
         $msg = $_.Exception.Message
         $script:EntityErrors[$Type] = [ordered]@{
             error      = $msg
-            gated      = [bool]($msg -match 'denied|not authorized|Unauthorized|privilege|0x80070005')
+            gated      = [bool]($msg -match 'denied|not authorized|not allowed|Unauthorized|privilege|0x80070005')
             durationMs = $sw.ElapsedMilliseconds
         }
     }
@@ -771,6 +772,7 @@ function Get-PhysicalDiskRecord {
                 bytes_per_sector = $_.BytesPerSector
                 status          = $_.Status
                 smart_capable   = $_.Capabilities
+                predictive_failure = [bool]($_.Status -match 'pred')
             }
         }
     } catch { Write-Verbose "ignored: $_" }
@@ -780,9 +782,25 @@ function Get-PhysicalDiskRecord {
 function Get-NetworkRecord {
     $out = @()
     try {
+        $mtuByIndex = @{}
+        try {
+            $nameToIndex = @{}
+            foreach ($a in (Get-CimData 'Win32_NetworkAdapter')) {
+                if ($a.NetConnectionID) { $nameToIndex[[string]$a.NetConnectionID] = [int]$a.Index }
+            }
+            foreach ($line in (@(& netsh interface ipv4 show subinterfaces 2>$null))) {
+                if ($line -match '^\s*(\d+)\s+\d+\s+\d+\s+\d+\s+(.+)$') {
+                    $ifname = $Matches[2].Trim()
+                    if ($nameToIndex.ContainsKey($ifname)) { $mtuByIndex[$nameToIndex[$ifname]] = [int]$Matches[1] }
+                }
+            }
+        } catch { Write-Verbose "ignored: $_" }
         $out = Get-CimData 'Win32_NetworkAdapterConfiguration' -Filter 'IPEnabled=True' | ForEach-Object {
-            $speed = $null
-            try { $speed = (Get-CimData 'Win32_NetworkAdapter' -Filter "Index=$($_.Index)" -ErrorAction Stop).Speed } catch { Write-Verbose "ignored: $_" }
+            $speed = $null; $adapterStatus = $null
+            try {
+                $adapter = Get-CimData 'Win32_NetworkAdapter' -Filter "Index=$($_.Index)" -ErrorAction Stop
+                $speed = $adapter.Speed; $adapterStatus = $adapter.NetConnectionStatus
+            } catch { Write-Verbose "ignored: $_" }
             [ordered]@{
                 key              = "nic:$($_.Index):$($_.MACAddress)"
                 interface_index  = $_.Index
@@ -799,8 +817,9 @@ function Get-NetworkRecord {
                 dhcp_enabled     = [bool]$_.DHCPEnabled
                 dhcp_server      = $_.DHCPServer
                 link_speed_bps   = $speed
-                mtu              = $null
-                status           = $_.NetConnectionStatus
+                mtu              = $mtuByIndex[[int]$_.Index]
+                status           = $adapterStatus
+                up               = [bool]($adapterStatus -eq 2)
                 service_name     = $_.ServiceName
             }
         }
@@ -1103,6 +1122,7 @@ function Get-MonitorRecord {
         foreach ($m in $ids) {
             $name = -join (@($m.UserFriendlyName) | Where-Object { $_ -gt 0 } | ForEach-Object { [char]$_ })
             $serial = -join (@($m.SerialNumberID) | Where-Object { $_ -gt 0 } | ForEach-Object { [char]$_ })
+            if ([string]::IsNullOrEmpty($serial)) { $serial = $name }
             $mfg = -join (@($m.ManufacturerName) | Where-Object { $_ -gt 0 } | ForEach-Object { [char]$_ })
             $out += [ordered]@{ key = "monitor:$serial"; manufacturer = $mfg; name = $name; serial_number = $serial; product_code = $null; size_inches = $null; year_of_manufacture = $m.YearOfManufacture; source = 'edid' }
         }
@@ -1222,9 +1242,9 @@ function Get-FirewallRecord {
     }
     if (@($out).Count -eq 0) {
         $profiles = @(
-            @{ Key = 'DomainProfile'; Name = 'domain' },
-            @{ Key = 'StandardProfile'; Name = 'private' },
-            @{ Key = 'PublicProfile'; Name = 'public' }
+            @{ Key = 'DomainProfile'; Name = 'Domain' },
+            @{ Key = 'StandardProfile'; Name = 'Private' },
+            @{ Key = 'PublicProfile'; Name = 'Public' }
         )
         foreach ($p in $profiles) {
             $path = "HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\$($p.Key)"
@@ -1278,6 +1298,609 @@ function Get-ProcessRecord {
     return @($out)
 }
 
+function Test-IsIPv4Address($Value) {
+    if ([string]::IsNullOrEmpty($Value)) { return $false }
+    $addr = $null
+    if (-not [net.ipaddress]::TryParse([string]$Value, [ref]$addr)) { return $false }
+    return $addr.AddressFamily -eq [net.sockets.addressfamily]::InterNetwork
+}
+
+function Get-NetworkProfileRecord {
+    $out = @()
+    $base = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\NetworkList\Profiles'
+    try {
+        foreach ($k in (Get-ChildItem $base -ErrorAction Stop)) {
+            $id = $k.PSChildName
+            $v = $null
+            try { $v = Get-ItemProperty $k.PSPath -ErrorAction Stop } catch { Write-Verbose "ignored: $_"; continue }
+            $cat = $null; $catName = $null
+            if ($null -ne $v.Category) {
+                $cat = [int]$v.Category
+                if ($cat -eq 0) { $catName = 'public' }
+                elseif ($cat -eq 1) { $catName = 'private' }
+                elseif ($cat -eq 2) { $catName = 'domain' }
+                else { $catName = 'unknown' }
+            }
+            $managed = $null
+            if ($null -ne $v.Managed) { $managed = [bool]([int]$v.Managed -ne 0) }
+            $out += [ordered]@{
+                key = "netprofile:$id"; profile_name = $v.ProfileName; description = $v.Description
+                category = $catName; category_id = $cat; managed = $managed
+            }
+        }
+    } catch { Write-Verbose "ignored: $_" }
+    return @($out)
+}
+
+function Get-WifiRecord {
+    $out = @()
+    try {
+        $text = ((& netsh wlan show interfaces 2>$null) -join "`n")
+        foreach ($block in ($text -split "`n`n")) {
+            $kv = @{}
+            foreach ($line in ($block -split "`n")) {
+                $i = $line.IndexOf(':')
+                if ($i -lt 0) { continue }
+                $kv[$line.Substring(0, $i).Trim().ToLower()] = $line.Substring($i + 1).Trim()
+            }
+            if ([string]::IsNullOrEmpty($kv['name'])) { continue }
+            $sig = $null
+            if ($kv['signal'] -match '(\d+)') { $sig = [int]$Matches[1] }
+            $ch = $null
+            if ($kv['channel'] -match '^\s*(\d+)') { $ch = [int]$Matches[1] }
+            $out += [ordered]@{
+                key = "wifi:$($kv['name'])"; interface = $kv['name']; state = $kv['state']
+                ssid = $kv['ssid']; bssid = $kv['bssid']; signal_percent = $sig; signal_dbm = $null
+                radio_type = $kv['radio type']; authentication = $kv['authentication']; cipher = $kv['cipher']; channel = $ch
+            }
+        }
+    } catch { Write-Verbose "ignored: $_" }
+    return @($out)
+}
+
+function Get-ProxyRecord {
+    $out = @()
+    try {
+        $ie = $null
+        try { $ie = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction Stop } catch { Write-Verbose "ignored: $_" }
+        $enabled = $null; $uServer = $null; $uBypass = $null; $uAuto = $null
+        if ($ie) {
+            if ($null -ne $ie.ProxyEnable) { $enabled = [bool]([int]$ie.ProxyEnable -ne 0) }
+            $uServer = $ie.ProxyServer; $uBypass = $ie.ProxyOverride; $uAuto = $ie.AutoConfigURL
+        }
+        $sysServer = $null; $sysBypass = $null
+        try {
+            $wout = ((& netsh winhttp show proxy 2>$null) -join "`n")
+            if ($wout -notmatch 'Direct access \(no proxy server\)') {
+                foreach ($line in ($wout -split "`n")) {
+                    $i = $line.IndexOf(':')
+                    if ($i -lt 0) { continue }
+                    $k = $line.Substring(0, $i).Trim().ToLower()
+                    $v = $line.Substring($i + 1).Trim()
+                    if ($k -eq 'proxy server(s)') { $sysServer = $v }
+                    elseif ($k -eq 'bypass list') { $sysBypass = $v }
+                }
+                if ([string]::IsNullOrEmpty($sysServer)) { $sysServer = $null; $sysBypass = $null }
+            }
+        } catch { Write-Verbose "ignored: $_" }
+        $out += [ordered]@{
+            key = 'proxy'; user_proxy_enabled = $enabled
+            user_proxy_server = $uServer; user_proxy_bypass = $uBypass; user_autoconfig_url = $uAuto
+            system_proxy_server = $sysServer; system_proxy_bypass = $sysBypass; source = 'registry+netsh'
+        }
+    } catch { Write-Verbose "ignored: $_" }
+    return @($out)
+}
+
+function Get-RouteRecord {
+    $out = @()
+    try {
+        $text = ((& route print -4 2>$null) -join "`n")
+        $persistent = $false
+        foreach ($line in ($text -split "`n")) {
+            $t = $line.Trim()
+            $low = $t.ToLower()
+            if ($low.Contains('persistent routes')) { $persistent = $true; continue }
+            if ($low.Contains('active routes')) { $persistent = $false; continue }
+            $f = @($t -split '\s+' | Where-Object { $_ -ne '' })
+            if ($f.Count -lt 4) { continue }
+            if (-not (Test-IsIPv4Address $f[0]) -or -not (Test-IsIPv4Address $f[1])) { continue }
+            $gw = $f[2]
+            if ($gw -ieq 'on-link') { $gw = '' } elseif (-not (Test-IsIPv4Address $gw)) { continue }
+            $iface = ''; $metric = $null
+            if ($persistent) {
+                if ($f[3] -match '^\d+$') { $metric = [int]$f[3] }
+            } else {
+                if ($f.Count -lt 5 -or -not (Test-IsIPv4Address $f[3])) { continue }
+                $iface = $f[3]
+                if ($f[4] -match '^\d+$') { $metric = [int]$f[4] }
+            }
+            $mkey = '-'
+            if ($null -ne $metric) { $mkey = "$metric" }
+            $key = "route:$($f[0])/$($f[1]):$($gw):$($iface):$mkey"
+            if ($persistent) { $key += ':P' }
+            $gwv = $null; if ($gw -ne '') { $gwv = $gw }
+            $ifv = $null; if ($iface -ne '') { $ifv = $iface }
+            $out += [ordered]@{
+                key = $key; destination = $f[0]; mask = $f[1]; gateway = $gwv
+                interface = $ifv; metric = $metric; family = 'ipv4'; persistent = $persistent
+            }
+        }
+    } catch { Write-Verbose "ignored: $_" }
+    return @($out)
+}
+
+function Get-ArpRecord {
+    $out = @()
+    try {
+        $text = ((& arp -a 2>$null) -join "`n")
+        $iface = ''
+        foreach ($line in ($text -split "`n")) {
+            $t = $line.Trim()
+            if ($t.ToLower().StartsWith('interface:')) {
+                $parts = @($t -split '\s+' | Where-Object { $_ -ne '' })
+                if ($parts.Count -ge 2) { $iface = $parts[1] }
+                continue
+            }
+            $f = @($t -split '\s+' | Where-Object { $_ -ne '' })
+            if ($f.Count -ne 3) { continue }
+            if (-not (Test-IsIPv4Address $f[0])) { continue }
+            $typ = $f[2].ToLower()
+            if ($typ -ne 'static' -and $typ -ne 'dynamic') { continue }
+            $ifv = $null; if ($iface -ne '') { $ifv = $iface }
+            $out += [ordered]@{
+                key = "arp:$($f[0]):$iface"; ip_address = $f[0]; mac_address = $f[1]
+                interface = $ifv; neighbor_type = $typ; neighbor_state = $null
+            }
+        }
+    } catch { Write-Verbose "ignored: $_" }
+    return @($out)
+}
+
+function Get-ScheduledTaskRecord {
+    $out = @()
+    try {
+        # schtasks prepends a UTF-8 BOM to redirected output (seen raw as
+        # U+FEFF or CP1252 mojibake); strip it, then locate the header row
+        # by its TaskName first column like the Go collector.
+        $bomRe = '^(' + [char]0xFEFF + '|' + [char]0xEF + [char]0xBB + [char]0xBF + ')+'
+        $csv = @((& schtasks /query /fo csv /v 2>$null) | ForEach-Object { $_ -replace $bomRe, '' } | Where-Object { $_ -match '"' })
+        $h = -1
+        for ($i = 0; $i -lt $csv.Count; $i++) {
+            $first = ($csv[$i] -split '","')[0].Trim().Trim('"').Trim()
+            if ($first -ieq 'taskname') { $h = $i; break }
+        }
+        if ($h -lt 0 -or ($h + 1) -ge $csv.Count) { return @($out) }
+        $lines = @($csv[$h..($csv.Count - 1)])
+        if ($lines.Count -lt 2) { return @($out) }
+        $rows = @($lines | ConvertFrom-Csv)
+        $hasName = $false
+        if ($rows.Count -gt 0 -and $rows[0].PSObject.Properties['TaskName']) { $hasName = $true }
+        if ($hasName) {
+            foreach ($r in $rows) {
+                $name = [string]$r.TaskName
+                if ([string]::IsNullOrEmpty($name) -or -not $name.StartsWith('\')) { continue }
+                $enabled = $null
+                if ($r.PSObject.Properties['Scheduled Task State'] -and $r.'Scheduled Task State' -ne '') {
+                    $enabled = [bool]($r.'Scheduled Task State' -ieq 'enabled')
+                }
+                $sched = [string]$r.'Schedule Type'
+                if ([string]$r.Schedule -ne '') {
+                    if ($sched -ne '') { $sched += ' ' }
+                    $sched += [string]$r.Schedule
+                }
+                if ($sched -eq '') { $sched = $null }
+                $out += [ordered]@{
+                    key = "task:$name"; task_name = $name; status = $r.Status; enabled = $enabled
+                    schedule = $sched; command = $r.'Task To Run'; author = $r.Author
+                    run_as_user = $r.'Run As User'; logon_mode = $r.'Logon Mode'
+                    last_run_time = $r.'Last Run Time'; last_result = $r.'Last Result'
+                    next_run_time = $r.'Next Run Time'; source = 'schtasks'
+                }
+            }
+        } elseif ($lines.Count -ge 2) {
+            foreach ($line in $lines[1..($lines.Count - 1)]) {
+                $cols = @($line -split '","' | ForEach-Object { $_.Trim().Trim('"') })
+                if ($cols.Count -lt 1 -or [string]::IsNullOrEmpty($cols[0]) -or -not $cols[0].StartsWith('\')) { continue }
+                $out += [ordered]@{
+                    key = "task:$($cols[0])"; task_name = $cols[0]; status = $null; enabled = $null
+                    schedule = $null; command = $null; author = $null
+                    run_as_user = $null; logon_mode = $null
+                    last_run_time = $null; last_result = $null
+                    next_run_time = $null; source = 'schtasks'
+                }
+            }
+        }
+    } catch { Write-Verbose "ignored: $_" }
+    return @($out)
+}
+
+function Get-RemoteAccessRecord {
+    $out = @()
+    try {
+        $tsPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server'
+        $rdp = $null; $port = 3389; $nla = $null
+        try {
+            $ts = Get-ItemProperty $tsPath -ErrorAction Stop
+            if ($null -ne $ts.fDenyTSConnections) { $rdp = [bool]([int]$ts.fDenyTSConnections -eq 0) }
+        } catch { Write-Verbose "ignored: $_" }
+        try {
+            $tcp = Get-ItemProperty "$tsPath\WinStations\RDP-Tcp" -ErrorAction Stop
+            if ($null -ne $tcp.PortNumber) { $port = [int]$tcp.PortNumber }
+            if ($null -ne $tcp.UserAuthentication) { $nla = [bool]([int]$tcp.UserAuthentication -ne 0) }
+        } catch { Write-Verbose "ignored: $_" }
+        $smbServer = $null; $smbClient = $null; $llmnr = $null
+        try {
+            $v = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters' -Name SMB1 -ErrorAction Stop
+            if ($null -ne $v.SMB1) { $smbServer = [bool]([int]$v.SMB1 -ne 0) }
+        } catch { Write-Verbose "ignored: $_" }
+        try {
+            $v = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\mrxsmb10' -Name Start -ErrorAction Stop
+            if ($null -ne $v.Start) { $smbClient = [bool]([int]$v.Start -ne 4) }
+        } catch { Write-Verbose "ignored: $_" }
+        try {
+            $v = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' -Name EnableMulticast -ErrorAction Stop
+            if ($null -ne $v.EnableMulticast) { $llmnr = [bool]([int]$v.EnableMulticast -ne 0) }
+        } catch { Write-Verbose "ignored: $_" }
+        $nbModes = @{}
+        try {
+            foreach ($nic in (Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces' -ErrorAction Stop)) {
+                try {
+                    $nv = Get-ItemProperty $nic.PSPath -Name NetbiosOptions -ErrorAction Stop
+                    if ($null -ne $nv.NetbiosOptions) { $nbModes[[int]$nv.NetbiosOptions] = $true }
+                } catch { Write-Verbose "ignored: $_" }
+            }
+        } catch { Write-Verbose "ignored: $_" }
+        $nbMode = $null
+        if ($nbModes.Count -gt 1) { $nbMode = 'mixed' }
+        elseif ($nbModes.Count -eq 1) {
+            $only = @($nbModes.Keys)[0]
+            if ($only -eq 0) { $nbMode = 'default' }
+            elseif ($only -eq 1) { $nbMode = 'enabled' }
+            elseif ($only -eq 2) { $nbMode = 'disabled' }
+            else { $nbMode = 'unknown' }
+        }
+        $wrRunning = $null; $wrStart = $null
+        try {
+            $svc = Get-CimData 'Win32_Service' -Filter "Name='WinRM'"
+            if ($svc) {
+                $wrRunning = [bool]($svc.State -ieq 'Running')
+                $wrStart = $svc.StartMode
+            }
+        } catch { Write-Verbose "ignored: $_" }
+        $out += [ordered]@{
+            key = 'remote_access'; rdp_enabled = $rdp; rdp_port = $port; rdp_nla_required = $nla
+            smb1_server = $smbServer; smb1_client = $smbClient; llmnr_enabled = $llmnr; netbios_mode = $nbMode
+            winrm_running = $wrRunning; winrm_start_mode = $wrStart
+            sshd_installed = $null; sshd_permit_root_login = $null; sshd_password_auth = $null; sshd_port = $null
+            source = 'registry+wmi'
+        }
+    } catch { Write-Verbose "ignored: $_" }
+    return @($out)
+}
+
+function Get-PrivilegedMemberRecord {
+    $out = @()
+    try {
+        $lines = @(& net localgroup administrators 2>$null)
+        $inMembers = $false
+        foreach ($line in $lines) {
+            $t = $line.Trim()
+            if (-not $inMembers) {
+                if ($t.StartsWith('---')) { $inMembers = $true }
+                continue
+            }
+            if ($t -eq '' -or $t.StartsWith('The command completed')) { break }
+            $name = $t; $domain = $null
+            $i = $t.LastIndexOf('\')
+            if ($i -ge 0) { $domain = $t.Substring(0, $i); $name = $t.Substring($i + 1) }
+            $out += [ordered]@{
+                key = "member:$($t.ToLower())"; name = $name; domain = $domain
+                member_type = $null; source = 'administrators'
+            }
+        }
+    } catch { Write-Verbose "ignored: $_" }
+    return @($out)
+}
+
+function Get-PasswordPolicyRecord {
+    $out = @()
+    try {
+        $m = @{}
+        foreach ($line in (@(& net accounts 2>$null))) {
+            $parts = @($line.Trim() -split '\s{2,}')
+            if ($parts.Count -ne 2 -or $parts[0] -eq '' -or $parts[1] -eq '') { continue }
+            $m[$parts[0].Trim().TrimEnd(':').ToLower()] = $parts[1].Trim()
+        }
+        $num = {
+            param($Needle)
+            foreach ($k in $m.Keys) {
+                if ($k.Contains($Needle)) {
+                    $v = $m[$k].Replace(',', '')
+                    $sp = $v.IndexOf(' ')
+                    if ($sp -ge 0) { $v = $v.Substring(0, $sp) }
+                    if ($v -match '^\d+$') { return [int]$v }
+                    return $null
+                }
+            }
+            return $null
+        }
+        $out += [ordered]@{
+            key = 'password_policy'
+            max_password_age_days = (& $num 'maximum password age')
+            min_password_age_days = (& $num 'minimum password age')
+            min_password_length = (& $num 'minimum password length')
+            password_history = (& $num 'password history')
+            lockout_threshold = (& $num 'lockout threshold')
+            lockout_duration_minutes = (& $num 'lockout duration')
+            lockout_reset_minutes = (& $num 'lockout observation')
+            source = 'net-accounts'
+        }
+    } catch { Write-Verbose "ignored: $_" }
+    return @($out)
+}
+
+function Get-UpdateHealthRecord {
+    $out = @()
+    try {
+        $wuBase = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate'
+        $lastOK = $null; $auOpt = $null; $wsus = $null
+        try {
+            $r = Get-ItemProperty "$wuBase\Auto Update\Results\Install" -Name LastSuccessTime -ErrorAction Stop
+            $lastOK = $r.LastSuccessTime
+        } catch { Write-Verbose "ignored: $_" }
+        try {
+            $r = Get-ItemProperty "$wuBase\AU" -Name AUOptions -ErrorAction Stop
+            if ($null -ne $r.AUOptions) { $auOpt = [int]$r.AUOptions }
+        } catch { Write-Verbose "ignored: $_" }
+        try {
+            $r = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' -Name WUServer -ErrorAction Stop
+            $wsus = $r.WUServer
+        } catch { Write-Verbose "ignored: $_" }
+        $source = 'windows-update'
+        if ($wsus) { $source = 'wsus' }
+        $reasons = New-Object System.Collections.Generic.List[string]
+        $pr = Test-PendingReboot
+        foreach ($ind in $pr.indicators) {
+            if ($ind -match 'RebootPending') { $reasons.Add('cbs-reboot-pending') }
+            elseif ($ind -match 'PackagesPending') { $reasons.Add('cbs-packages-pending') }
+            elseif ($ind -match 'RebootRequired') { $reasons.Add('wu-reboot-required') }
+            elseif ($ind -match 'PostRebootReporting') { $reasons.Add('wu-post-reboot-reporting') }
+            elseif ($ind -match 'PendingFileRenameOperations') { $reasons.Add('pending-file-rename') }
+        }
+        $out += [ordered]@{
+            key = 'update_health'; last_success_time = $lastOK; update_source = $source
+            wsus_server = $wsus; auto_update_option = $auOpt; auto_updates = $null
+            pending_reboot = [bool]($reasons.Count -gt 0); pending_reboot_reasons = @($reasons)
+            source = 'windows-update'
+        }
+    } catch { Write-Verbose "ignored: $_" }
+    return @($out)
+}
+
+function Get-ReliabilityRecord {
+    $out = @()
+    try {
+        $rows = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = 6008, 41, 1001, 1074 } -MaxEvents 1000 -ErrorAction SilentlyContinue)
+        $counts = @{ 6008 = 0; 41 = 0; 1001 = 0; 1074 = 0 }
+        $latest = @{ 6008 = ''; 41 = ''; 1001 = ''; 1074 = '' }
+        foreach ($e in $rows) {
+            $id = [int]$e.Id
+            if (-not $counts.ContainsKey($id)) { continue }
+            $counts[$id]++
+            $ts = $e.TimeCreated.ToUniversalTime().ToString('o')
+            if ($ts -gt $latest[$id]) { $latest[$id] = $ts }
+        }
+        $lastUnexpected = $null; if ($latest[6008] -ne '') { $lastUnexpected = $latest[6008] }
+        $lastBugcheck = $null; if ($latest[1001] -ne '') { $lastBugcheck = $latest[1001] }
+        $out += [ordered]@{
+            key = 'reliability'; unexpected_shutdowns = $counts[6008]; kernel_power_events = $counts[41]
+            bugchecks = $counts[1001]; clean_shutdowns = $counts[1074]
+            last_unexpected_shutdown = $lastUnexpected; last_bugcheck = $lastBugcheck; source = 'event-log'
+        }
+    } catch { Write-Verbose "ignored: $_" }
+    return @($out)
+}
+
+function Get-MachineCertRecord {
+    $out = @()
+    try {
+        $now = (Get-Date).ToUniversalTime()
+        $certs = @(Get-ChildItem Cert:\LocalMachine\My -ErrorAction Stop | Select-Object -First 200)
+        foreach ($c in $certs) {
+            if ([string]::IsNullOrEmpty($c.Thumbprint)) { continue }
+            $hours = 0; $expired = $false
+            try {
+                $hours = ($c.NotAfter.ToUniversalTime() - $now).TotalHours
+                $expired = $hours -lt 0
+            } catch { Write-Verbose "ignored: $_" }
+            $days = [int][Math]::Truncate($hours / 24)
+            $purposes = ((@($c.EnhancedKeyUsageList) | ForEach-Object { $_.FriendlyName }) -join ';')
+            if ($purposes -eq '') { $purposes = $null }
+            $out += [ordered]@{
+                key = "cert:$($c.Thumbprint)"; subject = $c.Subject; issuer = $c.Issuer
+                serial_number = $c.SerialNumber; thumbprint = $c.Thumbprint
+                not_before = $c.NotBefore.ToUniversalTime().ToString('o'); not_after = $c.NotAfter.ToUniversalTime().ToString('o')
+                days_remaining = $days; expired = $expired; expiring_soon = ((-not $expired) -and ($days -lt 30))
+                has_private_key = [bool]$c.HasPrivateKey; purposes = $purposes; store = 'MY'
+            }
+        }
+    } catch { throw }
+    return @($out)
+}
+
+function Get-UsbHistoryRecord {
+    $out = @()
+    try {
+        $base = 'HKLM:\SYSTEM\CurrentControlSet\Enum\USBSTOR'
+        if (-not (Test-Path $base)) { return @($out) }
+        foreach ($dev in (Get-ChildItem $base -ErrorAction Stop)) {
+            foreach ($ser in (Get-ChildItem $dev.PSPath -ErrorAction SilentlyContinue)) {
+                $v = $null
+                try { $v = Get-ItemProperty $ser.PSPath -ErrorAction Stop } catch { Write-Verbose "ignored: $_"; continue }
+                $out += [ordered]@{
+                    key = "usbstor:$($dev.PSChildName):$($ser.PSChildName)"
+                    device = $dev.PSChildName; serial = $ser.PSChildName
+                    friendly_name = $v.FriendlyName; container_id = $v.ContainerID
+                }
+            }
+        }
+    } catch { Write-Verbose "ignored: $_" }
+    return @($out)
+}
+
+function Get-DotNetFrameworkName($Release) {
+    $r = 0
+    try { $r = [int]$Release } catch { return '' }
+    if ($r -ge 533320) { return '4.8.1' }
+    if ($r -ge 528040) { return '4.8' }
+    if ($r -ge 461808) { return '4.7.2' }
+    if ($r -ge 461308) { return '4.7.1' }
+    if ($r -ge 460798) { return '4.7' }
+    if ($r -ge 394802) { return '4.6.2' }
+    if ($r -ge 394254) { return '4.6.1' }
+    if ($r -ge 393295) { return '4.6' }
+    if ($r -ge 379893) { return '4.5.2' }
+    if ($r -ge 378675) { return '4.5.1' }
+    if ($r -ge 378389) { return '4.5' }
+    return ''
+}
+
+function Test-VersionNewer($A, $B) {
+    if ([string]::IsNullOrEmpty($B)) { return (-not [string]::IsNullOrEmpty($A)) }
+    $pa = @($A -split '\.'); $pb = @($B -split '\.')
+    $n = $pa.Count; if ($pb.Count -lt $n) { $n = $pb.Count }
+    for ($i = 0; $i -lt $n; $i++) {
+        $na = 0; $nb = 0
+        $oka = [int]::TryParse($pa[$i], [ref]$na); $okb = [int]::TryParse($pb[$i], [ref]$nb)
+        if (-not $oka -or -not $okb) {
+            if ($pa[$i] -ne $pb[$i]) { return ($pa[$i] -gt $pb[$i]) }
+            continue
+        }
+        if ($na -ne $nb) { return ($na -gt $nb) }
+    }
+    return ($pa.Count -gt $pb.Count)
+}
+
+function Get-RuntimeRecord {
+    $out = @()
+    try {
+        $psVer = $null; $mPol = $null; $uPol = $null
+        try { $psVer = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\PowerShell\3\PowerShellEngine' -Name PowerShellVersion -ErrorAction Stop).PowerShellVersion } catch { Write-Verbose "ignored: $_" }
+        if ($psVer) {
+            try { $mPol = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell' -Name ExecutionPolicy -ErrorAction Stop).ExecutionPolicy } catch { Write-Verbose "ignored: $_" }
+            try { $uPol = (Get-ItemProperty 'HKCU:\SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell' -Name ExecutionPolicy -ErrorAction Stop).ExecutionPolicy } catch { Write-Verbose "ignored: $_" }
+            $out += [ordered]@{ key = "runtime:powershell:$psVer"; kind = 'powershell'; name = 'Windows PowerShell'; version = [string]$psVer; path = $null; machine_policy = $mPol; user_policy = $uPol; source = 'registry' }
+        }
+        try {
+            foreach ($k in (Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\PowerShellCore\InstalledVersions' -ErrorAction Stop)) {
+                $sv = $null
+                try { $sv = (Get-ItemProperty $k.PSPath -Name SemanticVersion -ErrorAction Stop).SemanticVersion } catch { Write-Verbose "ignored: $_"; continue }
+                if ([string]::IsNullOrEmpty($sv)) { continue }
+                $out += [ordered]@{ key = "runtime:powershell:$sv"; kind = 'powershell'; name = 'PowerShell 7'; version = [string]$sv; path = $null; machine_policy = $null; user_policy = $null; source = 'registry' }
+            }
+        } catch { Write-Verbose "ignored: $_" }
+        try {
+            $rel = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full' -Name Release -ErrorAction Stop).Release
+            $fw = Get-DotNetFrameworkName $rel
+            if ($fw -ne '') {
+                $out += [ordered]@{ key = "runtime:dotnet-framework:$fw"; kind = 'dotnet-framework'; name = '.NET Framework'; version = $fw; path = $null; machine_policy = $null; user_policy = $null; source = 'registry' }
+            }
+        } catch { Write-Verbose "ignored: $_" }
+        try {
+            foreach ($line in (@(& dotnet --list-runtimes 2>$null))) {
+                $f = @($line.Trim() -split '\s+' | Where-Object { $_ -ne '' })
+                if ($f.Count -lt 3) { continue }
+                if ($f[1] -notmatch '\.') { continue }
+                $rp = $f[2].Trim('[', ']')
+                $rv = $null; if ($rp -ne '') { $rv = $rp }
+                $out += [ordered]@{ key = "runtime:dotnet:$($f[0]):$($f[1])"; kind = 'dotnet'; name = $f[0]; version = $f[1]; path = $rv; machine_policy = $null; user_policy = $null; source = 'dotnet-cli' }
+            }
+        } catch { Write-Verbose "ignored: $_" }
+        $clients = @(
+            @{ Name = 'Google Chrome'; Slug = 'chrome'; Sub = 'SOFTWARE\Google\Update\Clients\{8A69D345-D564-4135-B097-BCE2976CFCE5}' },
+            @{ Name = 'Microsoft Edge'; Slug = 'edge'; Sub = 'SOFTWARE\Microsoft\EdgeUpdate\Clients\{56EB18F8-B008-4CBD-B6D2-8C97FE7E9062}' }
+        )
+        foreach ($c in $clients) {
+            foreach ($hive in @('HKLM:', 'HKCU:')) {
+                $bv = $null
+                try { $bv = (Get-ItemProperty "$hive\$($c.Sub)" -Name pv -ErrorAction Stop).pv } catch { Write-Verbose "ignored: $_" }
+                if ($bv) {
+                    $out += [ordered]@{ key = "runtime:browser:$($c.Slug):$bv"; kind = 'browser'; name = $c.Name; version = [string]$bv; path = $null; machine_policy = $null; user_policy = $null; source = 'registry' }
+                    break
+                }
+            }
+        }
+        try {
+            $vers = @()
+            foreach ($k in (Get-ChildItem 'HKLM:\SOFTWARE\Mozilla\Mozilla Firefox' -ErrorAction Stop)) {
+                if ($k.PSChildName -match '^\d') { $vers += $k.PSChildName }
+            }
+            $best = ''
+            foreach ($v in $vers) { if (Test-VersionNewer $v $best) { $best = $v } }
+            if ($best -ne '') {
+                $out += [ordered]@{ key = "runtime:browser:firefox:$best"; kind = 'browser'; name = 'Mozilla Firefox'; version = $best; path = $null; machine_policy = $null; user_policy = $null; source = 'registry' }
+            }
+        } catch { Write-Verbose "ignored: $_" }
+    } catch { Write-Verbose "ignored: $_" }
+    return @($out)
+}
+
+function Get-RecoveryRecord {
+    $out = @()
+    try {
+        $rows = @(Get-CimData 'Win32_DiskPartition' -Filter "Type LIKE '%Recovery%'")
+        $total = [long]0
+        foreach ($r in $rows) { try { $total += [long]$r.Size } catch { Write-Verbose "ignored: $_" } }
+        $status = 'unknown'
+        try {
+            $rout = ((& reagentc /info 2>$null) -join "`n").ToLower()
+            if ($rout -match 'windows re status') {
+                if ($rout -match 'disabled') { $status = 'Disabled' }
+                elseif ($rout -match 'enabled') { $status = 'Enabled' }
+            }
+        } catch { Write-Verbose "ignored: $_" }
+        $tv = $null; if ($rows.Count -gt 0) { $tv = $total }
+        $out += [ordered]@{
+            key = 'recovery'; recovery_partition_present = [bool]($rows.Count -gt 0)
+            recovery_partition_count = $rows.Count; recovery_total_bytes = $tv
+            winre_status = $status; source = 'wmi+reagentc'
+        }
+    } catch { Write-Verbose "ignored: $_" }
+    return @($out)
+}
+
+function Get-RaidRecord {
+    $out = @()
+    try {
+        $out = Get-CimData 'Win32_SCSIController' | ForEach-Object {
+            [ordered]@{
+                key = "raid:$($_.DeviceID)"; name = $_.Name; manufacturer = $_.Manufacturer
+                driver_name = $_.DriverName; status = $_.Status; firmware = $_.HardwareVersion
+            }
+        }
+    } catch { Write-Verbose "ignored: $_" }
+    return @($out)
+}
+
+function Get-ThreatRecord {
+    $out = @()
+    try {
+        # Defender cmdlet is Win8+ only; resolve indirectly so PowerShell 3.0
+        # analysts and Win7 hosts (no such command) both stay clean.
+        $threatCmd = Get-Command 'Get-MpThreatDetection' -ErrorAction SilentlyContinue
+        if (-not $threatCmd) { return @($out) }
+        $out = & $threatCmd -ErrorAction SilentlyContinue | Select-Object -First 200 | ForEach-Object {
+            [ordered]@{
+                key = "threat:$($_.ThreatID):$([string]$_.InitialDetectionTime)"
+                threat_id = $_.ThreatID; detected_at = [string]$_.InitialDetectionTime
+                resources = (($_.Resources) -join ';')
+            }
+        }
+    } catch { Write-Verbose "ignored: $_" }
+    return @($out)
+}
+
 $Identity = Get-HostIdentity
 $Elevated = Test-IsElevated
 $Level = $ProfileLevel[$CollectionProfile]
@@ -1306,6 +1929,18 @@ $plan = [ordered]@{
     logged_on_users     = @{ level = 1; body = { Get-LoggedOnUserRecord } }
     batteries           = @{ level = 1; body = { Get-BatteryRecord } }
     printers            = @{ level = 1; body = { Get-PrinterRecord } }
+    antivirus_threats   = @{ level = 1; body = { Get-ThreatRecord } }
+    network_profiles    = @{ level = 1; body = { Get-NetworkProfileRecord } }
+    wifi_networks       = @{ level = 1; body = { Get-WifiRecord } }
+    proxy_config        = @{ level = 1; body = { Get-ProxyRecord } }
+    routes              = @{ level = 1; body = { Get-RouteRecord } }
+    arp_neighbors       = @{ level = 1; body = { Get-ArpRecord } }
+    remote_access       = @{ level = 1; body = { Get-RemoteAccessRecord } }
+    privileged_members  = @{ level = 1; body = { Get-PrivilegedMemberRecord } }
+    password_policy     = @{ level = 1; body = { Get-PasswordPolicyRecord } }
+    update_health       = @{ level = 1; body = { Get-UpdateHealthRecord } }
+    runtimes            = @{ level = 1; body = { Get-RuntimeRecord } }
+    recovery            = @{ level = 1; body = { Get-RecoveryRecord } }
     services            = @{ level = 2; body = { Limit-Item (Get-ServiceRecord) $MaxListItems 'services' } }
     startup_items       = @{ level = 2; body = { Limit-Item (Get-StartupRecord) $MaxListItems 'startup_items' } }
     drivers             = @{ level = 2; body = { Limit-Item (Get-DriverRecord) $MaxListItems 'drivers' } }
@@ -1313,6 +1948,11 @@ $plan = [ordered]@{
     listening_ports     = @{ level = 2; body = { Limit-Item (Get-ListeningPortRecord) $MaxListItems 'listening_ports' } }
     monitors            = @{ level = 2; body = { Get-MonitorRecord } }
     usb_devices         = @{ level = 2; body = { Limit-Item (Get-UsbRecord) $MaxListItems 'usb_devices' } }
+    raid_controllers    = @{ level = 2; body = { Get-RaidRecord } }
+    scheduled_tasks     = @{ level = 2; body = { Limit-Item (Get-ScheduledTaskRecord) $MaxListItems 'scheduled_tasks' } }
+    reliability         = @{ level = 2; body = { Get-ReliabilityRecord } }
+    machine_certs       = @{ level = 2; body = { Limit-Item (Get-MachineCertRecord) $MaxListItems 'machine_certs' } }
+    usb_history         = @{ level = 2; body = { Limit-Item (Get-UsbHistoryRecord) $MaxListItems 'usb_history' } }
 }
 if ($IncludeAppx) { $plan['appx_packages'] = @{ level = 2; body = { Limit-Item (Get-AppxRecord) $MaxListItems 'appx_packages' } } }
 if ($IncludeProcesses) { $plan['processes'] = @{ level = 2; body = { Limit-Item (Get-ProcessRecord) $MaxListItems 'processes' } } }

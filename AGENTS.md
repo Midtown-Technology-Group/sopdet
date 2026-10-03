@@ -71,8 +71,11 @@ above apply to collectors; serve mode additionally:
 ## Verification
 
 Run `make check` before opening a PR. It is the single gate: `gofmt`, `go vet`,
-`go test ./...`, schema parity, and PSScriptAnalyzer (skipped if `pwsh` is
-absent). CI additionally runs `make cross`, a PowerShell job, `govulncheck`, and
+`go test ./...`, schema parity, PSScriptAnalyzer (skipped if `pwsh` is
+absent), PowerShell 3.0 compatibility, and the Go↔PowerShell equivalence
+check (Windows-only; skips elsewhere). CI additionally runs `make cross`, a
+PowerShell job, a Windows equivalence job (both collectors back-to-back plus
+native `go vet`, which also covers Windows-only files), `govulncheck`, and
 the CodeQL workflow.
 
 For collector changes, test on a real Windows host (`-dry-run`) and validate the

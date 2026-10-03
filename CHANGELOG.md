@@ -5,7 +5,37 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-03
+
 ### Added
+
+- Device-assessment entity batch (15 new entities, both implementations,
+  unified keys/fields): `network_profiles`, `wifi_networks`, `proxy_config`,
+  `routes`, `arp_neighbors`, `scheduled_tasks`, `remote_access`,
+  `privileged_members`, `password_policy`, `update_health`, `reliability`,
+  `machine_certs`, `usb_history`, `runtimes`, `recovery`. Windows sources are
+  read-only WMI/registry/CLI queries (no admin); Linux adds cron/systemd
+  timers, `/proc` routes/ARP, sshd and login.defs posture; macOS adds
+  launchd jobs, netstat/ARP tables, sshd config, and install history. All
+  text parsers are shared pure functions with unit tests.
+- Go `network_interfaces` enrichment (gateway/DNS/DHCP/link-speed parity with
+  the PowerShell collector), SMART `predictive_failure` on physical disks,
+  `quser` sessions in `logged_on_users`, and `install_source`/
+  `uninstall_string` on software records.
+- Firewall profile keys now use canonical case (`firewall:Domain`,
+  `firewall:Private`, `firewall:Public`) in both implementations; older Go
+  baselines churn these three records once.
+- PowerShell backfills: `raid_controllers` and `antivirus_threats` (were
+  Go-only), NIC `status`/`up`, disk `predictive_failure`, and a monitor
+  serial fallback. Agent version 0.4.0.
+- Equivalence gate: `cmd/equivcheck` compares Go and PowerShell envelopes
+  from one host (entity sets, counts, keys, per-record field names with
+  documented join/warn rules), wired as `make equivalence-check` (in `make
+  check`, Windows-only) and a CI `equivalence` job on `windows-latest` that
+  also runs native `go vet` over the Windows-only files.
+- Schema: `raid_controllers` and `antivirus_threats` added to the entity
+  enum (the Go agent already emitted them, so full Windows output could not
+  validate), plus the 15 new entities and advisory record definitions.
 
 - **Heartbeat `agent_version` + `SOPDET_DISABLE_HINTS`** (device control
   plane `Midtown-Technology-Group/bifrost#818`, poll-only drill `#852`):
@@ -114,6 +144,11 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
   listening ports, and multi-distro software (dpkg, rpm, pacman, apk).
 - macOS collectors: hardware/serial/UUID (system_profiler + ioreg), BIOS/firmware,
   virtualization, installed applications, and graphics.
+
+### Fixed
+
+- `make analyzer` and `make compat-check` now actually fail on findings;
+  the trailing `echo` previously swallowed the analyzer exit code.
 
 ## [0.1.0] - 2026-09-20
 

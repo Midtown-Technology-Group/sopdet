@@ -122,6 +122,80 @@
           "observed_at": "2026-01-01T00:00:00Z"
         }
       ]
-    }
+    },
+  "machine_certs": {
+    "count": 1,
+    "fingerprint": "6598894d505f66ae0a48ca504d8247f5b7b51517078fdee8e1b153e2b220f4b5",
+    "records": [
+      {
+        "days_remaining": 365,
+        "expired": false,
+        "expiring_soon": false,
+        "fingerprint": "aedc277d7e9280c84211b7070b2b569e80c50c22cc41edb16b5d3936bf4f52e7",
+        "has_private_key": true,
+        "issuer": "CN=Example CA",
+        "key": "cert:AA11BB22CC33",
+        "not_after": "2027-01-01T00:00:00Z",
+        "not_before": "2025-01-01T00:00:00Z",
+        "observed_at": "2026-01-01T00:00:00Z",
+        "purposes": "Server Authentication",
+        "serial_number": "1A2B3C",
+        "store": "MY",
+        "subject": "CN=example.local",
+        "thumbprint": "AA11BB22CC33"
+      }
+    ]
+  },
+  "routes": {
+    "count": 2,
+    "fingerprint": "b96a24342c2b49e02d2b02a58c0eb6f9bec3939b0f693f690ade851cc70d49ec",
+    "records": [
+      {
+        "destination": "0.0.0.0",
+        "family": "ipv4",
+        "fingerprint": "de897240fa4398194b3ad01e73ee08aedd8652d7bea8e53f7db64a9f8d5cb783",
+        "gateway": "192.0.2.1",
+        "interface": "192.0.2.10",
+        "key": "route:0.0.0.0/0.0.0.0:192.0.2.1:192.0.2.10:25",
+        "mask": "0.0.0.0",
+        "metric": 25,
+        "observed_at": "2026-01-01T00:00:00Z",
+        "persistent": false
+      },
+      {
+        "destination": "198.51.100.0",
+        "family": "ipv4",
+        "fingerprint": "7394e72a85c6fee9afbd6ff90d215411be84c3534ede1ea9b91bff9d6570ccea",
+        "gateway": null,
+        "interface": "198.51.100.7",
+        "key": "route:198.51.100.0/255.255.255.0::198.51.100.7:281",
+        "mask": "255.255.255.0",
+        "metric": 281,
+        "observed_at": "2026-01-01T00:00:00Z",
+        "persistent": false
+      }
+    ]
+  },
+  "update_health": {
+    "count": 1,
+    "fingerprint": "5ef1689680b113f4fcee262a5ad54776d6736e0c039578739bc52ff8b4084c22",
+    "records": [
+      {
+        "auto_update_option": 4,
+        "auto_updates": null,
+        "fingerprint": "7d29aedeeb1712f0af417e13f6b17c3fac938423905c2de5e6b58e4898851b39",
+        "key": "update_health",
+        "last_success_time": "2025-12-15 03:00:00",
+        "observed_at": "2026-01-01T00:00:00Z",
+        "pending_reboot": true,
+        "pending_reboot_reasons": [
+          "wu-reboot-required"
+        ],
+        "source": "windows-update",
+        "update_source": "windows-update",
+        "wsus_server": null
+      }
+    ]
+  }
   }
 }

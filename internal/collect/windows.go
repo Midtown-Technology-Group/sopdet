@@ -78,6 +78,8 @@ func (softwareCollector) Collect(_ context.Context, s *Session) ([]schema.Record
 			publisher, _, _ := sub.GetStringValue("Publisher")
 			installDate, _, _ := sub.GetStringValue("InstallDate")
 			location, _, _ := sub.GetStringValue("InstallLocation")
+			installSource, _, _ := sub.GetStringValue("InstallSource")
+			uninstallString, _, _ := sub.GetStringValue("UninstallString")
 			sizeKB, _, _ := sub.GetIntegerValue("EstimatedSize")
 			sub.Close()
 
@@ -93,10 +95,12 @@ func (softwareCollector) Collect(_ context.Context, s *Session) ([]schema.Record
 				"vendor":           publisher,
 				"install_date":     normalizeInstallDate(installDate),
 				"install_location": location,
+				"install_source":   anyStr(installSource),
 				"scope":            h.scope,
 				"architecture":     h.arch,
 				"source":           "registry",
 				"product_code":     name,
+				"uninstall_string": anyStr(uninstallString),
 			}
 			if sizeKB > 0 {
 				rec["size_bytes"] = int64(sizeKB) * 1024

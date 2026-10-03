@@ -53,6 +53,21 @@ func wmiCollectors() []Collector {
 		winProcessCollector{},
 		winRaidCollector{},
 		winVolumesCollector{},
+		winNetworkProfileCollector{},
+		winWifiCollector{},
+		winProxyCollector{},
+		winRouteCollector{},
+		winArpCollector{},
+		winScheduledTaskCollector{},
+		winRemoteAccessCollector{},
+		winPrivilegedMemberCollector{},
+		winPasswordPolicyCollector{},
+		winUpdateHealthCollector{},
+		winReliabilityCollector{},
+		winMachineCertCollector{},
+		winUSBHistoryCollector{},
+		winRuntimeCollector{},
+		winRecoveryCollector{},
 	}
 }
 
@@ -494,7 +509,7 @@ type winAntivirusCollector struct{}
 
 func (winAntivirusCollector) Name() string { return "antivirus" }
 func (winAntivirusCollector) Level() int   { return levelQuick }
-func (winAntivirusCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
+func (winAntivirusCollector) Collect(ctx context.Context, _ *Session) ([]schema.Record, error) {
 	var rows []struct {
 		DisplayName            string
 		InstanceGUID           string
@@ -502,10 +517,12 @@ func (winAntivirusCollector) Collect(_ context.Context, _ *Session) ([]schema.Re
 		PathToSignedProductExe string
 	}
 	if err := wmi.QueryNamespace("SELECT DisplayName,InstanceGUID,ProductState,PathToSignedProductExe FROM AntiVirusProduct", &rows, "root\\SecurityCenter2"); err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "invalid namespace") {
-			return []schema.Record{}, nil
+		if !strings.Contains(strings.ToLower(err.Error()), "invalid namespace") {
+			return nil, err
 		}
-		return nil, err
+		// Server SKUs lack SecurityCenter2; fall through to the
+		// Defender-status fallback below like the PowerShell collector.
+		rows = nil
 	}
 	out := make([]schema.Record, 0, len(rows))
 	for _, r := range rows {
@@ -515,7 +532,53 @@ func (winAntivirusCollector) Collect(_ context.Context, _ *Session) ([]schema.Re
 			"product_exe": r.PathToSignedProductExe,
 		})
 	}
+	out = enrichDefenderStatus(ctx, out)
 	return out, nil
+}
+
+// enrichDefenderStatus mirrors the PowerShell collector: Defender records
+// gain live version/signature fields, and a Server SKU with no
+// SecurityCenter2 namespace gets a synthetic windows-defender record.
+func enrichDefenderStatus(ctx context.Context, out []schema.Record) []schema.Record {
+	script := "Get-MpComputerStatus -ErrorAction Stop | Select-Object AntivirusEnabled,AntivirusSignatureAge,AMProductVersion,AntivirusSignatureVersion | ConvertTo-Json -Compress -Depth 2"
+	raw, err := assessCombined(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return out
+	}
+	var d struct {
+		AntivirusEnabled          bool
+		AntivirusSignatureAge     *int
+		AMProductVersion          string
+		AntivirusSignatureVersion string
+	}
+	if err := json.Unmarshal([]byte(raw), &d); err != nil {
+		return out
+	}
+	upToDate := true
+	if d.AntivirusSignatureAge != nil {
+		upToDate = *d.AntivirusSignatureAge <= 1
+	}
+	found := false
+	for _, r := range out {
+		name, _ := r["name"].(string)
+		if !strings.Contains(strings.ToLower(name), "defender") {
+			continue
+		}
+		found = true
+		r["version"] = d.AMProductVersion
+		r["definition_version"] = d.AntivirusSignatureVersion
+		r["enabled"] = d.AntivirusEnabled
+		r["up_to_date"] = upToDate
+	}
+	if !found {
+		out = append(out, schema.Record{
+			"key": "av:windows-defender", "name": "Windows Defender", "product_state": nil,
+			"enabled": d.AntivirusEnabled, "up_to_date": upToDate,
+			"version": d.AMProductVersion, "definition_version": d.AntivirusSignatureVersion,
+			"expiration": nil, "instance_guid": nil, "product_exe": nil,
+		})
+	}
+	return out
 }
 
 type winServiceCollector struct{}
@@ -605,6 +668,7 @@ func (winPhysicalDiskCollector) Collect(_ context.Context, _ *Session) ([]schema
 			"manufacturer": r.Manufacturer, "serial_number": r.SerialNumber, "size_bytes": int64(r.Size),
 			"interface_type": r.InterfaceType, "media_type": r.MediaType, "firmware": r.FirmwareRevision,
 			"partition_count": r.Partitions, "bytes_per_sector": r.BytesPerSector, "status": r.Status,
+			"predictive_failure": strings.Contains(strings.ToLower(r.Status), "pred"),
 		})
 	}
 	return out, nil
@@ -732,10 +796,12 @@ type winFirewallCollector struct{}
 func (winFirewallCollector) Name() string { return "firewall_profiles" }
 func (winFirewallCollector) Level() int   { return levelMinimal }
 func (winFirewallCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
+	// Canonical profile case (Domain/Private/Public) matches the OS naming
+	// and the PowerShell collector; older Go baselines churn once.
 	profiles := []struct{ key, name string }{
-		{"DomainProfile", "domain"},
-		{"StandardProfile", "private"},
-		{"PublicProfile", "public"},
+		{"DomainProfile", "Domain"},
+		{"StandardProfile", "Private"},
+		{"PublicProfile", "Public"},
 	}
 	out := []schema.Record{}
 	for _, p := range profiles {
@@ -777,16 +843,36 @@ type winLoggedOnUserCollector struct{}
 
 func (winLoggedOnUserCollector) Name() string { return "logged_on_users" }
 func (winLoggedOnUserCollector) Level() int   { return levelQuick }
-func (winLoggedOnUserCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
+func (winLoggedOnUserCollector) Collect(ctx context.Context, _ *Session) ([]schema.Record, error) {
+	out := []schema.Record{}
+	seen := map[string]bool{}
 	var cs []struct{ UserName string }
 	if err := wmi.Query("SELECT UserName FROM Win32_ComputerSystem", &cs); err != nil {
 		return nil, err
 	}
-	if len(cs) == 0 || cs[0].UserName == "" {
-		return []schema.Record{}, nil
+	if len(cs) > 0 && cs[0].UserName != "" {
+		user := cs[0].UserName
+		short := user
+		if i := strings.LastIndex(user, `\`); i >= 0 {
+			short = user[i+1:]
+		}
+		seen[strings.ToLower(short)] = true
+		out = append(out, schema.Record{"key": "session:" + user, "user_name": user, "session_type": "console", "logon_time": nil, "sid": nil})
 	}
-	user := cs[0].UserName
-	return []schema.Record{{"key": "session:" + user, "user_name": user, "session_type": "console", "logon_time": nil, "sid": nil}}, nil
+	// quser adds RDP and service sessions; absent on Home editions.
+	if qout, err := assessExec(ctx, "quser"); err == nil {
+		for _, q := range parseQuser(qout) {
+			if seen[strings.ToLower(q.User)] {
+				continue
+			}
+			seen[strings.ToLower(q.User)] = true
+			out = append(out, schema.Record{
+				"key": "session:" + q.User + ":" + q.Session, "user_name": q.User,
+				"session_type": q.Session, "logon_time": q.LogonTime, "sid": nil,
+			})
+		}
+	}
+	return out, nil
 }
 
 type winMonitorCollector struct{}

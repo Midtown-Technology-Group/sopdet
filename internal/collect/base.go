@@ -179,6 +179,7 @@ func (networkCollector) Collect(_ context.Context, _ *Session) ([]schema.Record,
 			"up":           ni.Flags != nil && contains(ni.Flags, "up"),
 		})
 	}
+	enrichNetworkInterfaces(out)
 	return out, nil
 }
 

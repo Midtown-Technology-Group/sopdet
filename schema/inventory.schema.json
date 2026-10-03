@@ -86,7 +86,11 @@
           "software", "os_patches", "local_users", "logged_on_users",
           "batteries", "printers", "services", "startup_items", "drivers",
           "physical_disks", "listening_ports", "monitors", "usb_devices",
-          "appx_packages", "processes"
+          "appx_packages", "processes", "raid_controllers", "antivirus_threats",
+          "network_profiles", "wifi_networks", "proxy_config", "routes",
+          "arp_neighbors", "scheduled_tasks", "remote_access",
+          "privileged_members", "password_policy", "update_health",
+          "reliability", "machine_certs", "usb_history", "runtimes", "recovery"
         ]
       },
       "additionalProperties": { "oneOf": [ { "$ref": "#/$defs/entityCollection" }, { "$ref": "#/$defs/entityDelta" } ] }
@@ -187,13 +191,242 @@
     "networkInterface": {
       "allOf": [{ "$ref": "#/$defs/record" }],
       "properties": {
+        "interface_index": { "type": ["integer", "null"] },
+        "adapter_name": { "type": ["string", "null"] },
+        "description": { "type": ["string", "null"] },
         "mac_address": { "type": ["string", "null"] },
         "ip_addresses": { "type": "array", "items": { "type": "string" } },
+        "subnet_masks": { "type": "array", "items": { "type": "string" } },
         "default_gateway": { "type": "array", "items": { "type": "string" } },
         "dns_servers": { "type": "array", "items": { "type": "string" } },
-        "dhcp_enabled": { "type": "boolean" },
+        "dns_domain": { "type": ["string", "null"] },
+        "dns_host_name": { "type": ["string", "null"] },
+        "dhcp_enabled": { "type": ["boolean", "null"] },
+        "dhcp_server": { "type": ["string", "null"] },
         "link_speed_bps": { "type": ["integer", "null"] },
-        "mtu": { "type": ["integer", "null"] }
+        "mtu": { "type": ["integer", "null"] },
+        "status": { "type": ["integer", "null"] },
+        "service_name": { "type": ["string", "null"] },
+        "up": { "type": ["boolean", "null"] }
+      }
+    },
+    "physicalDisk": {
+      "allOf": [{ "$ref": "#/$defs/record" }],
+      "properties": {
+        "index": { "type": ["integer", "null"] },
+        "model": { "type": ["string", "null"] },
+        "serial_number": { "type": ["string", "null"] },
+        "size_bytes": { "type": ["integer", "null"] },
+        "interface_type": { "type": ["string", "null"] },
+        "media_type": { "type": ["string", "null"] },
+        "status": { "type": ["string", "null"], "description": "Drive health status (OK, Degraded, Pred Fail, ...)" },
+        "predictive_failure": { "type": ["boolean", "null"], "description": "true when SMART predicts failure" },
+        "partitions": { "type": ["integer", "null"] }
+      }
+    },
+    "networkProfile": {
+      "allOf": [{ "$ref": "#/$defs/record" }],
+      "description": "Named network location awareness profile (Windows NLM).",
+      "properties": {
+        "profile_name": { "type": ["string", "null"] },
+        "description": { "type": ["string", "null"] },
+        "category": { "type": ["string", "null"], "description": "public | private | domain" },
+        "category_id": { "type": ["integer", "null"] },
+        "managed": { "type": ["boolean", "null"] }
+      }
+    },
+    "wifiNetwork": {
+      "allOf": [{ "$ref": "#/$defs/record" }],
+      "description": "Wireless interface association state. No scan is performed.",
+      "properties": {
+        "interface": { "type": ["string", "null"] },
+        "state": { "type": ["string", "null"] },
+        "ssid": { "type": ["string", "null"] },
+        "bssid": { "type": ["string", "null"] },
+        "signal_percent": { "type": ["integer", "null"], "description": "Volatile: excluded from fingerprints" },
+        "signal_dbm": { "type": ["integer", "null"], "description": "Volatile: excluded from fingerprints" },
+        "radio_type": { "type": ["string", "null"] },
+        "authentication": { "type": ["string", "null"] },
+        "cipher": { "type": ["string", "null"] },
+        "channel": { "type": ["integer", "null"] }
+      }
+    },
+    "proxyConfig": {
+      "allOf": [{ "$ref": "#/$defs/record" }],
+      "description": "Single-record entity (key proxy): per-user and system proxy configuration.",
+      "properties": {
+        "user_proxy_enabled": { "type": ["boolean", "null"] },
+        "user_proxy_server": { "type": ["string", "null"] },
+        "user_proxy_bypass": { "type": ["string", "null"] },
+        "user_autoconfig_url": { "type": ["string", "null"] },
+        "system_proxy_server": { "type": ["string", "null"] },
+        "system_proxy_bypass": { "type": ["string", "null"] },
+        "source": { "type": ["string", "null"] }
+      }
+    },
+    "routeEntry": {
+      "allOf": [{ "$ref": "#/$defs/record" }],
+      "description": "IPv4 route table entry.",
+      "properties": {
+        "destination": { "type": ["string", "null"] },
+        "mask": { "type": ["string", "null"] },
+        "gateway": { "type": ["string", "null"] },
+        "interface": { "type": ["string", "null"] },
+        "metric": { "type": ["integer", "null"] },
+        "family": { "type": ["string", "null"] },
+        "persistent": { "type": ["boolean", "null"] }
+      }
+    },
+    "arpNeighbor": {
+      "allOf": [{ "$ref": "#/$defs/record" }],
+      "description": "Read-only ARP/neighbor table entry. Nothing is probed or sent.",
+      "properties": {
+        "ip_address": { "type": ["string", "null"] },
+        "mac_address": { "type": ["string", "null"] },
+        "interface": { "type": ["string", "null"] },
+        "neighbor_type": { "type": ["string", "null"], "description": "static | dynamic" },
+        "neighbor_state": { "type": ["string", "null"], "description": "Volatile: excluded from fingerprints" }
+      }
+    },
+    "scheduledTask": {
+      "allOf": [{ "$ref": "#/$defs/record" }],
+      "description": "Scheduled task / cron entry / timer / launchd job. Times are raw source strings except where ISO.",
+      "properties": {
+        "task_name": { "type": ["string", "null"] },
+        "status": { "type": ["string", "null"] },
+        "enabled": { "type": ["boolean", "null"] },
+        "schedule": { "type": ["string", "null"] },
+        "command": { "type": ["string", "null"] },
+        "author": { "type": ["string", "null"] },
+        "run_as_user": { "type": ["string", "null"] },
+        "logon_mode": { "type": ["string", "null"] },
+        "last_run_time": { "type": ["string", "null"] },
+        "last_result": { "type": ["string", "null"] },
+        "next_run_time": { "type": ["string", "null"] },
+        "source": { "type": ["string", "null"], "description": "schtasks | cron | systemd-timer | launchd" }
+      }
+    },
+    "remoteAccess": {
+      "allOf": [{ "$ref": "#/$defs/record" }],
+      "description": "Single-record entity (key remote_access): inbound remote-access posture.",
+      "properties": {
+        "rdp_enabled": { "type": ["boolean", "null"] },
+        "rdp_port": { "type": ["integer", "null"] },
+        "rdp_nla_required": { "type": ["boolean", "null"] },
+        "smb1_server": { "type": ["boolean", "null"] },
+        "smb1_client": { "type": ["boolean", "null"] },
+        "llmnr_enabled": { "type": ["boolean", "null"] },
+        "netbios_mode": { "type": ["string", "null"] },
+        "winrm_running": { "type": ["boolean", "null"] },
+        "winrm_start_mode": { "type": ["string", "null"] },
+        "sshd_installed": { "type": ["boolean", "null"] },
+        "sshd_permit_root_login": { "type": ["string", "null"] },
+        "sshd_password_auth": { "type": ["string", "null"] },
+        "sshd_port": { "type": ["integer", "null"] },
+        "source": { "type": ["string", "null"] }
+      }
+    },
+    "privilegedMember": {
+      "allOf": [{ "$ref": "#/$defs/record" }],
+      "description": "Member of a privileged local group (Administrators, sudo, wheel, admin, docker).",
+      "properties": {
+        "name": { "type": ["string", "null"] },
+        "domain": { "type": ["string", "null"] },
+        "member_type": { "type": ["string", "null"], "description": "user | group" },
+        "source": { "type": ["string", "null"] }
+      }
+    },
+    "passwordPolicy": {
+      "allOf": [{ "$ref": "#/$defs/record" }],
+      "description": "Single-record entity (key password_policy): local password and lockout policy.",
+      "properties": {
+        "max_password_age_days": { "type": ["integer", "null"] },
+        "min_password_age_days": { "type": ["integer", "null"] },
+        "min_password_length": { "type": ["integer", "null"] },
+        "password_history": { "type": ["integer", "null"] },
+        "lockout_threshold": { "type": ["integer", "null"] },
+        "lockout_duration_minutes": { "type": ["integer", "null"] },
+        "lockout_reset_minutes": { "type": ["integer", "null"] },
+        "source": { "type": ["string", "null"] }
+      }
+    },
+    "updateHealth": {
+      "allOf": [{ "$ref": "#/$defs/record" }],
+      "description": "Single-record entity (key update_health): patch pipeline health and pending reboot.",
+      "properties": {
+        "last_success_time": { "type": ["string", "null"] },
+        "update_source": { "type": ["string", "null"] },
+        "wsus_server": { "type": ["string", "null"] },
+        "auto_update_option": { "type": ["integer", "null"] },
+        "auto_updates": { "type": ["boolean", "null"] },
+        "pending_reboot": { "type": ["boolean", "null"] },
+        "pending_reboot_reasons": { "type": "array", "items": { "type": "string" } },
+        "source": { "type": ["string", "null"] }
+      }
+    },
+    "reliability": {
+      "allOf": [{ "$ref": "#/$defs/record" }],
+      "description": "Single-record entity (key reliability): unexpected shutdown / crash counters.",
+      "properties": {
+        "unexpected_shutdowns": { "type": ["integer", "null"] },
+        "kernel_power_events": { "type": ["integer", "null"] },
+        "bugchecks": { "type": ["integer", "null"] },
+        "clean_shutdowns": { "type": ["integer", "null"] },
+        "last_unexpected_shutdown": { "type": ["string", "null"] },
+        "last_bugcheck": { "type": ["string", "null"] },
+        "source": { "type": ["string", "null"] }
+      }
+    },
+    "machineCert": {
+      "allOf": [{ "$ref": "#/$defs/record" }],
+      "description": "Local-machine personal store certificate. No private key material.",
+      "properties": {
+        "subject": { "type": ["string", "null"] },
+        "issuer": { "type": ["string", "null"] },
+        "serial_number": { "type": ["string", "null"] },
+        "thumbprint": { "type": ["string", "null"] },
+        "not_before": { "type": ["string", "null"] },
+        "not_after": { "type": ["string", "null"] },
+        "days_remaining": { "type": ["integer", "null"], "description": "Volatile: excluded from fingerprints" },
+        "expired": { "type": ["boolean", "null"] },
+        "expiring_soon": { "type": ["boolean", "null"] },
+        "has_private_key": { "type": ["boolean", "null"] },
+        "purposes": { "type": ["string", "null"] },
+        "store": { "type": ["string", "null"] }
+      }
+    },
+    "usbHistoryEntry": {
+      "allOf": [{ "$ref": "#/$defs/record" }],
+      "description": "Previously attached USB storage device (registry history, not just connected).",
+      "properties": {
+        "device": { "type": ["string", "null"] },
+        "serial": { "type": ["string", "null"] },
+        "friendly_name": { "type": ["string", "null"] },
+        "container_id": { "type": ["string", "null"] }
+      }
+    },
+    "runtimeEntry": {
+      "allOf": [{ "$ref": "#/$defs/record" }],
+      "description": "Managed runtime, interpreter, execution policy scope, or browser.",
+      "properties": {
+        "kind": { "type": ["string", "null"] },
+        "name": { "type": ["string", "null"] },
+        "version": { "type": ["string", "null"] },
+        "path": { "type": ["string", "null"] },
+        "machine_policy": { "type": ["string", "null"] },
+        "user_policy": { "type": ["string", "null"] },
+        "source": { "type": ["string", "null"] }
+      }
+    },
+    "recovery": {
+      "allOf": [{ "$ref": "#/$defs/record" }],
+      "description": "Single-record entity (key recovery): recovery partition and WinRE status.",
+      "properties": {
+        "recovery_partition_present": { "type": ["boolean", "null"] },
+        "recovery_partition_count": { "type": ["integer", "null"] },
+        "recovery_total_bytes": { "type": ["integer", "null"] },
+        "winre_status": { "type": ["string", "null"] },
+        "source": { "type": ["string", "null"] }
       }
     },
     "antivirus": {

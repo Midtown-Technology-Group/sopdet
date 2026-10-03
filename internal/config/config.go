@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 )
@@ -51,6 +52,9 @@ func Load(path string) (Config, error) {
 		}
 		return cfg, err
 	}
+	// Tolerate a UTF-8 BOM: Windows editors (and PowerShell's Out-File)
+	// routinely write one, and it is not valid JSON whitespace.
+	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return cfg, err
 	}

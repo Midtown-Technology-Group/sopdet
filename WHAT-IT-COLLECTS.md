@@ -41,6 +41,25 @@ than guessed; a failed collection appears in `entity_errors` with
 - Listening TCP/UDP ports with owning process (full profile; ephemeral ports excluded)
 - Logical volumes: drive letter, label, filesystem, capacity, free space, serial, encryption state
 - Printers, monitors, USB devices (full profile)
+- Physical disk health: SMART status and predictive-failure flag
+
+## Network fingerprinting (read-only; nothing is scanned, probed, or captured)
+- IPv4 route table (active + persistent) and ARP/neighbor table entries
+- Network location profiles: name, public/private/domain category
+- Wi-Fi association per interface: SSID, BSSID, signal, auth/cipher (current link only, no scan)
+- Proxy configuration: per-user server/bypass/PAC URL and system (WinHTTP/scutil) proxy
+
+## Assessment posture
+- Scheduled tasks (Windows), cron/systemd timers (Linux), launchd jobs (macOS): schedule, command, author, last result. Note: schtasks column names follow the OS display language on non-English systems (positional fallback).
+- Remote-access posture: RDP state/port/NLA, SMBv1 client/server, LLMNR, NetBIOS mode, WinRM (Windows); sshd config: installed, permit-root-login, password-auth, port (Linux/macOS)
+- Privileged members: local Administrators (Windows); sudo/wheel/admin/docker groups plus extra uid-0 accounts (Linux/macOS)
+- Password and lockout policy: max/min age, min length, history, lockout threshold/duration
+- Update health: last success time, Windows Update vs WSUS source, pending-reboot state with reasons
+- Reliability: unexpected-shutdown, kernel-power, bugcheck, and clean-shutdown counters with latest timestamps
+- Machine-store certificate expiry: subject, issuer, dates, expired/expiring flags (no private key material; may report gated without read access)
+- USB storage history: previously attached devices by serial (registry history, not just connected)
+- Runtimes: PowerShell/.NET versions and execution policy, `dotnet` runtimes, installed browser versions
+- Recovery: recovery-partition presence and WinRE status (Windows)
 
 ## Deliberately not collected
 - File contents, user documents, browser history, credentials, passwords, tokens or secrets
