@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/yusufpapurcu/wmi"
 	"golang.org/x/sys/windows/registry"
@@ -30,6 +31,17 @@ func decodePSRows[T any](out string) ([]T, error) {
 		return nil, err
 	}
 	return []T{single}, nil
+}
+
+// wmiQueryRetry runs a WMI query once, retrying a single time after a short
+// pause. Bulk queries flake occasionally under load; callers treat a final
+// failure as missing data, never fatal.
+func wmiQueryRetry(query string, dst any) error {
+	if err := wmi.Query(query, dst); err == nil {
+		return nil
+	}
+	time.Sleep(2 * time.Second)
+	return wmi.Query(query, dst)
 }
 
 // Registry helpers. Reads use the 64-bit view so results do not depend on
@@ -124,10 +136,14 @@ func enrichNetworkInterfaces(recs []schema.Record) {
 	}
 	var adapters []adapter
 	var configs []config
-	if err := wmi.Query("SELECT Index,NetConnectionID,Description,MACAddress,Speed,NetConnectionStatus FROM Win32_NetworkAdapter", &adapters); err != nil {
+	// One retry each: CI showed these bulk queries can flake once under
+	// load while per-NIC queries succeed. Config rows are IPEnabled-only
+	// (matching the PowerShell collector), which also skips the
+	// NULL-laden rows of down/virtual adapters.
+	if err := wmiQueryRetry("SELECT Index,NetConnectionID,Description,MACAddress,Speed,NetConnectionStatus FROM Win32_NetworkAdapter", &adapters); err != nil {
 		adapters = nil
 	}
-	if err := wmi.Query("SELECT Index,IPEnabled,IPAddress,IPSubnet,DefaultIPGateway,DNSServerSearchOrder,DNSDomain,DNSHostName,DHCPEnabled,DHCPServer,ServiceName FROM Win32_NetworkAdapterConfiguration", &configs); err != nil {
+	if err := wmiQueryRetry("SELECT Index,IPEnabled,IPAddress,IPSubnet,DefaultIPGateway,DNSServerSearchOrder,DNSDomain,DNSHostName,DHCPEnabled,DHCPServer,ServiceName FROM Win32_NetworkAdapterConfiguration WHERE IPEnabled=TRUE", &configs); err != nil {
 		configs = nil
 	}
 	byIndex := map[uint32]config{}
@@ -145,6 +161,11 @@ func enrichNetworkInterfaces(recs []schema.Record) {
 			continue
 		}
 		c, ok := byIndex[a.Index]
+		// Prefer the config-having adapter when MACs collide (teamed or
+		// virtual adapters share MACs and WMI row order is not stable).
+		if e, taken := byMAC[nm]; taken && (e.ok || !ok) {
+			continue
+		}
 		byMAC[nm] = struct {
 			a  adapter
 			c  config

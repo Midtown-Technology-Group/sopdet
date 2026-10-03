@@ -17,7 +17,9 @@ if ($env:OS -ne 'Windows_NT') {
 }
 
 $root = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
-$work = Join-Path ([IO.Path]::GetTempPath()) 'sopdet-equiv'
+$tempBase = $env:RUNNER_TEMP
+if ([string]::IsNullOrEmpty($tempBase)) { $tempBase = [IO.Path]::GetTempPath() }
+$work = Join-Path $tempBase 'sopdet-equiv'
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 $goExe = Join-Path $work 'sopdet-equiv.exe'
 $goJson = Join-Path $work 'go.json'
