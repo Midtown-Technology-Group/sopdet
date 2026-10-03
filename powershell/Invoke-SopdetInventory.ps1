@@ -817,7 +817,7 @@ function Get-NetworkRecord {
                 dhcp_enabled     = [bool]$_.DHCPEnabled
                 dhcp_server      = $_.DHCPServer
                 link_speed_bps   = $speed
-                mtu              = $mtuByIndex[$_.Index]
+                mtu              = $mtuByIndex[[int]$_.Index]
                 status           = $adapterStatus
                 up               = [bool]($adapterStatus -eq 2)
                 service_name     = $_.ServiceName
