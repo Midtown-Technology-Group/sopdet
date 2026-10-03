@@ -58,7 +58,7 @@ jobs:
           path: bin
       - name: Azure login (OIDC)
         if: env.AZURE_CLIENT_ID != ''
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ env.AZURE_CLIENT_ID }}
           tenant-id: ${{ env.AZURE_TENANT_ID }}
