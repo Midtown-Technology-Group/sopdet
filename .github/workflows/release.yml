@@ -65,7 +65,7 @@ jobs:
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
       - name: Install Artifact Signing client (signtool dlib)
         if: env.AZURE_CLIENT_ID != ''
-        uses: nuget/setup-nuget@v2
+        uses: nuget/setup-nuget@v4
       - name: Fetch dlib
         if: env.AZURE_CLIENT_ID != ''
         shell: pwsh
