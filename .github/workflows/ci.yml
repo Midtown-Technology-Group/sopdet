@@ -115,7 +115,7 @@ jobs:
     permissions:
       contents: read
     needs: coverage
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     uses: Midtown-Technology-Group/engineering-workflows/.github/workflows/sonar.yml@bc3b6f7099177c00ac728d6d32d83fc8dcf76d84
     with:
       project-key: Midtown-Technology-Group_sopdet
