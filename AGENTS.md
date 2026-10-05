@@ -14,7 +14,7 @@ behavior.
    `powershell/inventory.schema.json` (PowerShell) are the same document and must
    stay **byte-identical** (`make schema-check`). Changing the envelope or entity
    shape means updating both, the schema file, and `testdata/`.
-2. **Read-only — inventory mode.** Collectors must not modify the target
+2. **Read-only â€” inventory mode.** Collectors must not modify the target
    machine. No registry or configuration writes; no installs; no elevation
    required. A skipped or access-denied section is reported in `entity_errors`
    (with `gated: true`), never guessed. **Serve mode is the deliberate
@@ -30,7 +30,7 @@ behavior.
    canonicalization. Never share delta state across implementations; a Go first
    scan is a fresh baseline.
 5. **Signing and WDAC.** Signed distribution is required for hardened endpoints.
-   Signing is necessary but not sufficient under App Control — see
+   Signing is necessary but not sufficient under App Control â€” see
    `docs/appcontrol.md`. Do not weaken a fleet's policy to make Sopdet run; add a
    scoped supplemental policy or use a managed installer.
 
@@ -49,7 +49,7 @@ above apply to collectors; serve mode additionally:
 - Reports `running` **only after a real process spawn** and never re-runs a job
   locally after an uncertain outcome or a fenced rejection (server `lost`
   policy owns that decision).
-- Uses `Authorization: Bearer` for WebSocket and `X-Bifrost-Key` for HTTP —
+- Uses `Authorization: Bearer` for WebSocket and `X-Bifrost-Key` for HTTP â€”
   never `?device_key=` query credentials.
 - Is delivered/updated only via the pinned bootstrap binary; **unsigned +
   manifest builds are canary-only**, private-trust signed builds are the
@@ -72,7 +72,7 @@ above apply to collectors; serve mode additionally:
 
 Run `make check` before opening a PR. It is the single gate: `gofmt`, `go vet`,
 `go test ./...`, schema parity, PSScriptAnalyzer (skipped if `pwsh` is
-absent), PowerShell 3.0 compatibility, and the Go↔PowerShell equivalence
+absent), PowerShell 3.0 compatibility, and the Goâ†”PowerShell equivalence
 check (Windows-only; skips elsewhere). CI additionally runs `make cross`, a
 PowerShell job, a Windows equivalence job (both collectors back-to-back plus
 native `go vet`, which also covers Windows-only files), `govulncheck`, and
@@ -89,3 +89,11 @@ output against the schema; compile-only is not enough for WMI work.
   pass-through layers.
 - Update `CHANGELOG.md` for user-visible changes.
 - Runtime spool and device state files stay out of the repo.
+
+## Sonar feedback
+
+Use the shared `sonar-feedback` skill for scan routing and bounded findings.
+Repository build/test gates and operator boundaries remain authoritative.
+Repo-owned Sonar configuration separates authored source from tests. CI
+produces coverage for the scanner; unavailable coverage is not a clean result.
+Automatic analysis stays active until staged manual CI proof is ready.

@@ -3,6 +3,7 @@ name: ci
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
@@ -90,3 +91,34 @@ jobs:
           print("macOS entities:", len(d["entities"]), sorted(d["entities"].keys()))
           print("entity_errors:", list(d.get("entity_errors", {}).keys()))
           PY
+
+  coverage:
+    permissions:
+      contents: read
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+      - run: go test -coverprofile=coverage.out ./...
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sonar-coverage
+          path: coverage.out
+          if-no-files-found: error
+
+  sonar:
+    permissions:
+      contents: read
+    needs: coverage
+    # Staged migration: exercise manually before disabling automatic analysis.
+    if: github.event_name == 'workflow_dispatch'
+    uses: Midtown-Technology-Group/engineering-workflows/.github/workflows/sonar.yml@bc3b6f7099177c00ac728d6d32d83fc8dcf76d84
+    with:
+      project-key: Midtown-Technology-Group_sopdet
+      organization: midtown-technology-group
+      coverage-artifact: sonar-coverage
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
