@@ -99,6 +99,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
@@ -113,8 +115,7 @@ jobs:
     permissions:
       contents: read
     needs: coverage
-    # Staged migration: exercise manually before disabling automatic analysis.
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     uses: Midtown-Technology-Group/engineering-workflows/.github/workflows/sonar.yml@bc3b6f7099177c00ac728d6d32d83fc8dcf76d84
     with:
       project-key: Midtown-Technology-Group_sopdet
