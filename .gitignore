@@ -10,3 +10,6 @@ scripts/artifact-signing.env
 powershell/last-run.json
 powershell/last-run.log
 powershell/results/
+coverage.out
+.sonar-coverage/
+.scannerwork/
