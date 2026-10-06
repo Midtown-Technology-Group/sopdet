@@ -107,10 +107,15 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go test -coverprofile=coverage.out ./...
+      - name: signing regressions with measured PowerShell line coverage
+        shell: pwsh
+        run: ./scripts/test-sign-artifacts.ps1 -CoveragePath signing-coverage.xml
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: sonar-coverage
-          path: coverage.out
+          path: |
+            coverage.out
+            signing-coverage.xml
           if-no-files-found: error
 
   sonar:

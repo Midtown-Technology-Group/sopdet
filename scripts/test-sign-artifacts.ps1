@@ -3,9 +3,55 @@
   Exercise signing configuration and invocation without credentials or signing requests.
 #>
 [CmdletBinding()]
-param()
+param([string]$CoveragePath, [switch]$CoverageChild, [hashtable]$CoverageState)
 
 $ErrorActionPreference = 'Stop'
+
+function Measure-SigningLine {
+    param([string]$ScriptPath, [string]$ReportPath)
+
+    $parseErrors = $null
+    $tokens = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($ScriptPath, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors) { throw "Cannot measure coverage for $ScriptPath" }
+    foreach ($command in $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandBaseAst] }, $true)) {
+        $extent = $command.Extent
+        [pscustomobject]@{
+            ReportPath = $ReportPath
+            Breakpoint = Set-PSBreakpoint -Script $ScriptPath -Line $extent.StartLineNumber -Column $extent.StartColumnNumber -Action { }
+        }
+    }
+}
+
+# Re-enter with breakpoints already installed so setup and cleanup are measured too.
+# Coverage uses real debugger HitCount values, never inferred hits from test success.
+if ($CoveragePath -and -not $CoverageChild) {
+    $coverage = @{ Entries = @(Measure-SigningLine -ScriptPath $PSCommandPath -ReportPath 'scripts/test-sign-artifacts.ps1') }
+    try {
+        & $PSCommandPath -CoveragePath $CoveragePath -CoverageChild -CoverageState $coverage
+        $writer = [System.Xml.XmlWriter]::Create([IO.Path]::GetFullPath($CoveragePath))
+        try {
+            $writer.WriteStartElement('coverage')
+            $writer.WriteAttributeString('version', '1')
+            foreach ($fileGroup in $coverage.Entries | Group-Object ReportPath) {
+                $writer.WriteStartElement('file')
+                $writer.WriteAttributeString('path', $fileGroup.Name)
+                foreach ($lineGroup in $fileGroup.Group | Group-Object { $_.Breakpoint.Line } | Sort-Object { [int]$_.Name }) {
+                    $covered = @($lineGroup.Group | Where-Object { $_.Breakpoint.HitCount -gt 0 }).Count -gt 0
+                    $writer.WriteStartElement('lineToCover')
+                    $writer.WriteAttributeString('lineNumber', $lineGroup.Name)
+                    $writer.WriteAttributeString('covered', $covered.ToString().ToLowerInvariant())
+                    $writer.WriteEndElement()
+                }
+                $writer.WriteEndElement()
+            }
+            $writer.WriteEndElement()
+        } finally { $writer.Dispose() }
+        Write-Output "Measured signing line coverage: $CoveragePath"
+    } finally { $coverage.Entries.Breakpoint | Remove-PSBreakpoint }
+    return
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('sopdet signing test ' + [guid]::NewGuid())
 $settings = @(
@@ -15,6 +61,15 @@ $settings = @(
 )
 $savedEnvironment = @{}
 foreach ($name in $settings) { $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name) }
+
+function Test-SigningConfiguration {
+    param($Sign, [string]$Label, [hashtable]$Expected)
+
+    foreach ($key in @('Endpoint', 'CodeSigningAccountName', 'CertificateProfileName')) {
+        if ($Sign.Metadata.$key -ne $Expected[$key]) { throw "$Label resolved the wrong $key" }
+    }
+    if ($Sign.Dlib -ne $Expected.Dlib) { throw "$Label resolved the wrong dlib" }
+}
 
 function Test-SigningResult {
     param([string]$Label, [hashtable]$Expected)
@@ -27,10 +82,7 @@ function Test-SigningResult {
         if ($sign.Arguments[0] -ne 'sign' -or $verify.Arguments[0] -ne 'verify') {
             throw "$Label did not sign then verify each file"
         }
-        foreach ($key in @('Endpoint', 'CodeSigningAccountName', 'CertificateProfileName')) {
-            if ($sign.Metadata.$key -ne $Expected[$key]) { throw "$Label resolved the wrong $key" }
-        }
-        if ($sign.Dlib -ne $Expected.Dlib) { throw "$Label resolved the wrong dlib" }
+        Test-SigningConfiguration -Sign $sign -Label $Label -Expected $Expected
         $target = $sign.Arguments[-1]
         if ((Split-Path -Leaf $target) -ne (Split-Path -Leaf $inputFiles[$i]) -or $verify.Arguments[-1] -ne $target) {
             throw "$Label lost or misbound an input file"
@@ -46,6 +98,10 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $testRoot 'scripts'), (Join-Path $testRoot 'bin') -Force | Out-Null
     $helperPath = Join-Path $testRoot 'scripts/sign-artifacts.ps1'
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'sign-artifacts.ps1') -Destination $helperPath
+    if ($CoverageChild) {
+        if ((Get-FileHash $helperPath).Hash -ne (Get-FileHash (Join-Path $PSScriptRoot 'sign-artifacts.ps1')).Hash) { throw 'Coverage helper differs from source' }
+        $CoverageState.Entries += @(Measure-SigningLine -ScriptPath $helperPath -ReportPath 'scripts/sign-artifacts.ps1')
+    }
     $envFile = Join-Path $testRoot 'scripts/artifact-signing.env'
     $stubPath = Join-Path $testRoot 'fake-signtool.ps1'
     @'
