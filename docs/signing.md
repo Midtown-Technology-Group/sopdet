@@ -32,20 +32,34 @@ no command for it), and it gates certificate-profile creation.
    - **Organization + Private** → for the Private Trust profile (managed fleet).
      Not subject to the geographic restriction; organization name defaults to
      the Entra tenant name.
-3. Copy the **Identity validation Id**, then create the two profiles:
+3. Complete **separate Public and Private organization validations**. Once each
+   is completed, copy its **Identity validation Id** from the matching record.
+   Public validation applies to Public Trust, Public Trust Test, and VBS
+   Enclave profiles; Private validation applies to Private Trust and Private
+   Trust CI Policy profiles. Do not reuse one ID across the two trust types.
+   See Microsoft's [Artifact Signing quickstart](https://learn.microsoft.com/en-us/azure/artifact-signing/quickstart#create-an-identity-validation-request).
+
+   Profile creation below is a later authorized provisioning step:
 
    ```sh
-   IV=<identity-validation-id>
+   PUBLIC_IV=<completed-public-organization-validation-id>
+   PRIVATE_IV=<completed-private-organization-validation-id>
    az artifact-signing certificate-profile create -g rg-sopdet-signing \
        --account mtg-sopdet-signing --name sopdet-public \
-       --profile-type PublicTrust --identity-validation-id "$IV"
+       --profile-type PublicTrust --identity-validation-id "$PUBLIC_IV"
    az artifact-signing certificate-profile create -g rg-sopdet-signing \
        --account mtg-sopdet-signing --name sopdet-private \
-       --profile-type PrivateTrust --identity-validation-id "$IV"
+       --profile-type PrivateTrust --identity-validation-id "$PRIVATE_IV"
    ```
 
 4. Confirm and record the profile names in `scripts/artifact-signing.env`
-   (already staged; do not commit it).
+   (copy from `scripts/artifact-signing.env.example`; do not commit it).
+
+Preparation does not complete onboarding. The 2026-10-06 read-only account
+inspection found no organization identity validations or certificate profiles,
+and updated terms dated 2026-05-04 await human acceptance. An authorized human
+must resolve terms and identity validation before later profile provisioning
+and signing; do not treat the commands below as completed steps.
 
 ## Signing
 
@@ -62,6 +76,33 @@ make publish-private # stage the private tier
 
 `scripts/sign-artifacts.ps1` copies each binary, signs via `signtool /dlib`,
 then verifies with `signtool verify /pa`.
+
+Each endpoint, account, certificate-profile, and dlib setting resolves from a
+nonempty explicit parameter, then its `ARTIFACT_SIGNING_*` environment variable,
+then `scripts/artifact-signing.env`. The selected trust tier chooses
+`ARTIFACT_SIGNING_CERT_PROFILE_PUBLIC` or `ARTIFACT_SIGNING_CERT_PROFILE_PRIVATE`.
+`-CertificateProfileName` overrides that selection.
+
+For multiple files in PowerShell, use one array-valued parameter:
+
+```powershell
+./scripts/sign-artifacts.ps1 -Profile Public -OutDir dist/signed-public `
+    -File 'bin/sopdet-windows-amd64.exe','bin/sopdet-windows-arm64.exe'
+```
+
+Make uses `pwsh -Command` because native `pwsh -File` does not bind array
+arguments ([PowerShell CLI documentation](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_pwsh#-file---f)).
+Run `make signing-test` (or `pwsh -NoProfile -File scripts/test-sign-artifacts.ps1`)
+to exercise configuration and both release/Make call sites with synthetic files
+and a fake signtool. These checks make no signing requests and do not prove live
+certificate trust, WDAC acceptance, or preservation of Ninja-delivered script
+signatures; those remain later acceptance checks.
+
+CI also runs the suite with `-CoveragePath signing-coverage.xml`. PowerShell
+debugger breakpoints record actual line hits in the suite and the byte-identical
+copy of the signing helper. The report is imported through Sonar's generic
+coverage format alongside Go coverage; no coverage exclusions or gate thresholds
+are changed.
 
 ## CI signing identity (planned)
 

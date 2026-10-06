@@ -25,8 +25,8 @@ jobs:
         run: |
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -AllowClobber
-      - name: analyzer + PowerShell 3.0 compatibility
-        run: make analyzer compat-check
+      - name: analyzer + PowerShell 3.0 compatibility + signing regressions
+        run: make analyzer compat-check signing-test
 
   govulncheck:
     runs-on: ubuntu-latest
@@ -60,6 +60,8 @@ jobs:
           go-version: '1.27.x'
       - name: vet (native Windows coverage)
         run: go vet ./...
+      - name: signing regressions (no credentials or signing requests)
+        run: pwsh -NoProfile -File scripts/test-sign-artifacts.ps1
       - name: equivalence (Go vs PowerShell envelopes)
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-equivalence.ps1
       - name: Upload envelopes on failure
@@ -105,10 +107,15 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go test -coverprofile=coverage.out ./...
+      - name: signing regressions with measured PowerShell line coverage
+        shell: pwsh
+        run: ./scripts/test-sign-artifacts.ps1 -CoveragePath signing-coverage.xml
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: sonar-coverage
-          path: coverage.out
+          path: |
+            coverage.out
+            signing-coverage.xml
           if-no-files-found: error
 
   sonar:
