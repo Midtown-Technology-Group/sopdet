@@ -4,7 +4,7 @@ LDFLAGS := -s -w -X main.Version=$(VERSION)
 DIST    := dist
 
 .PHONY: build cross test vet fmt clean sign-public sign-private publish-public publish-private \
-        check fmt-check schema-check analyzer compat-check equivalence-check
+        check fmt-check schema-check analyzer compat-check equivalence-check signing-test
 
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/$(BINARY)
@@ -53,7 +53,12 @@ compat-check:
 			&& echo "PowerShell 3.0 compatibility clean"; \
 	else echo "pwsh not found; skipping compatibility check"; fi
 
-check: fmt-check vet test schema-check analyzer compat-check equivalence-check
+signing-test:
+	@if command -v pwsh >/dev/null 2>&1; then \
+		pwsh -NoProfile -File scripts/test-sign-artifacts.ps1; \
+	else echo "pwsh not found; skipping signing tests"; fi
+
+check: fmt-check vet test schema-check analyzer compat-check equivalence-check signing-test
 	@echo "verification gate passed"
 
 # Windows-only: collects with both implementations back-to-back and fails on
@@ -72,15 +77,11 @@ endif
 
 sign-public: cross
 	@mkdir -p $(DIST)/signed-public
-	pwsh -NoProfile -File scripts/sign-artifacts.ps1 -Profile Public \
-		-File bin/sopdet-windows-amd64.exe -File bin/sopdet-windows-arm64.exe \
-		-OutDir $(DIST)/signed-public
+	pwsh -NoProfile -Command './scripts/sign-artifacts.ps1 -Profile Public -File "bin/sopdet-windows-amd64.exe","bin/sopdet-windows-arm64.exe" -OutDir "$(DIST)/signed-public"'
 
 sign-private: cross
 	@mkdir -p $(DIST)/signed-private
-	pwsh -NoProfile -File scripts/sign-artifacts.ps1 -Profile Private \
-		-File bin/sopdet-windows-amd64.exe -File bin/sopdet-windows-arm64.exe \
-		-OutDir $(DIST)/signed-private
+	pwsh -NoProfile -Command './scripts/sign-artifacts.ps1 -Profile Private -File "bin/sopdet-windows-amd64.exe","bin/sopdet-windows-arm64.exe" -OutDir "$(DIST)/signed-private"'
 
 publish-public: cross
 	bash scripts/publish.sh public $(DIST)/signed-public

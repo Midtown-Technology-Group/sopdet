@@ -5,6 +5,14 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- Windows artifact signing now resolves each setting from explicit parameters,
+  environment variables, then the local envfile, including both trust profiles.
+  Release and Make signing commands pass both Windows binaries as one array.
+- Signing runbook uses separate Public and Private identity validation IDs for
+  their matching certificate profiles.
+
 ## [0.2.0] - 2026-10-03
 
 ### Added

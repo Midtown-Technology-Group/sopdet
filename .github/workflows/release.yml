@@ -77,11 +77,11 @@ jobs:
       - name: Sign public tier
         if: env.AZURE_CLIENT_ID != ''
         shell: pwsh
-        run: ./scripts/sign-artifacts.ps1 -Profile Public -OutDir dist/signed-public -File bin/sopdet-windows-amd64.exe -File bin/sopdet-windows-arm64.exe
+        run: ./scripts/sign-artifacts.ps1 -Profile Public -OutDir dist/signed-public -File 'bin/sopdet-windows-amd64.exe','bin/sopdet-windows-arm64.exe'
       - name: Sign private tier
         if: env.AZURE_CLIENT_ID != ''
         shell: pwsh
-        run: ./scripts/sign-artifacts.ps1 -Profile Private -OutDir dist/signed-private -File bin/sopdet-windows-amd64.exe -File bin/sopdet-windows-arm64.exe
+        run: ./scripts/sign-artifacts.ps1 -Profile Private -OutDir dist/signed-private -File 'bin/sopdet-windows-amd64.exe','bin/sopdet-windows-arm64.exe'
       - uses: actions/upload-artifact@v7
         if: env.AZURE_CLIENT_ID != ''
         with:
