@@ -122,6 +122,15 @@ func (s *Serve) Run(ctx context.Context) error {
 	if removed, err := s.Client.SweepSpool(); err == nil && removed > 0 {
 		fmt.Fprintf(os.Stderr, "serve: swept %d stale spool files\n", removed)
 	}
+	// Stale per-job script staging (crash/kill leftovers) is swept once
+	// at startup, before this process stages any script, so the sweep
+	// can never meet this agent's own active file; recent foreign files
+	// are preserved by the 24h age bound (see SweepStaleScripts).
+	if s.Config.WorkDir != "" {
+		if removed, err := SweepStaleScripts(s.Config.WorkDir); err == nil && removed > 0 {
+			fmt.Fprintf(os.Stderr, "serve: swept %d stale job scripts\n", removed)
+		}
+	}
 	if s.EnableHints && s.Hints != nil {
 		go s.Hints.Run(ctx)
 	}

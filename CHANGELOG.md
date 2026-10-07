@@ -5,6 +5,22 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- Serve mode now sweeps stale per-job script staging files
+  (`sopdet-job-*.ps1` in the configured work dir) once at startup, covering
+  leftovers from crashes/kills/power loss that the per-run cleanup cannot
+  reach. The sweep is bounded: configured work dir only (never the shared
+  temp dir), top-level pattern matches only, plain regular files only
+  (symlinks never followed), and only files older than 24h. The sweep runs
+  before the agent stages any script, so it cannot meet the agent's own
+  active file; age preserves recent foreign files but is not unconditional
+  protection for a concurrent foreign job running longer than 24h in the
+  same dir. Claim-lease renewal is
+  deliberately not implemented: the frozen M0 device protocol exposes no
+  renewal endpoint, so long jobs still rely on the server's `lost` policy;
+  renewal tracks `Midtown-Technology-Group/bifrost#1059`.
+
 ## [0.2.0] - 2026-10-03
 
 ### Added
