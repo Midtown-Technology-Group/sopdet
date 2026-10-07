@@ -126,15 +126,7 @@ func (s *Serve) Run(ctx context.Context) error {
 	// at startup, before this process stages any script, so the sweep
 	// can never meet this agent's own active file; recent foreign files
 	// are preserved by the 24h age bound (see SweepStaleScripts).
-	if s.Config.WorkDir != "" {
-		removed, err := SweepStaleScripts(s.Config.WorkDir)
-		if removed > 0 {
-			fmt.Fprintf(os.Stderr, "serve: swept %d stale job scripts\n", removed)
-		}
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "serve: stale job script sweep incomplete: %v\n", err)
-		}
-	}
+	s.sweepStaleJobScripts()
 	if s.EnableHints && s.Hints != nil {
 		go s.Hints.Run(ctx)
 	}
@@ -174,6 +166,19 @@ func (s *Serve) Run(ctx context.Context) error {
 
 		s.process(ctx, job)
 		pollTimer.Reset(0) // more work may be waiting after a terminal
+	}
+}
+
+func (s *Serve) sweepStaleJobScripts() {
+	if s.Config.WorkDir == "" {
+		return
+	}
+	removed, err := SweepStaleScripts(s.Config.WorkDir)
+	if removed > 0 {
+		s.logf("swept %d stale job scripts", removed)
+	}
+	if err != nil {
+		s.logf("stale job script sweep incomplete: %v", err)
 	}
 }
 

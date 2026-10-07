@@ -42,6 +42,12 @@ const (
 //
 // It returns the number of files removed. A missing dir is not an error.
 func SweepStaleScripts(dir string) (int, error) {
+	return sweepStaleScripts(dir, os.Lstat, os.Remove)
+}
+
+// Injectable filesystem calls let race and I/O failures be tested without
+// changing permissions on a real work directory.
+func sweepStaleScripts(dir string, lstat func(string) (os.FileInfo, error), remove func(string) error) (int, error) {
 	if dir == "" {
 		return 0, nil
 	}
@@ -56,34 +62,14 @@ func SweepStaleScripts(dir string) (int, error) {
 	cutoff := time.Now().Add(-staleScriptTTL)
 	removed := 0
 	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		ok, err := filepath.Match(staleScriptPattern, e.Name())
-		if err != nil || !ok {
-			continue
-		}
-		// Path boundary: top-level entry of the swept dir only. The
-		// join cannot escape: e.Name() comes from ReadDir and names a
-		// direct child, and Clean keeps it anchored.
-		path := filepath.Join(clean, e.Name())
-		if filepath.Dir(path) != clean {
-			continue
-		}
-		info, err := os.Lstat(path)
+		path, err := staleScriptPath(clean, e, cutoff, lstat)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue // concurrently removed
-			}
-			return removed, fmt.Errorf("inspect stale script %s after removing %d: %w", path, removed, err)
+			return removed, fmt.Errorf("sweep after removing %d: %w", removed, err)
 		}
-		if !info.Mode().IsRegular() {
-			continue // symlink, device, socket, ... — never follow
+		if path == "" {
+			continue
 		}
-		if !info.ModTime().Before(cutoff) {
-			continue // fresh: possibly an active job's script
-		}
-		if err := os.Remove(path); err != nil {
+		if err := remove(path); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue // concurrently removed
 			}
@@ -92,4 +78,31 @@ func SweepStaleScripts(dir string) (int, error) {
 		removed++
 	}
 	return removed, nil
+}
+
+func staleScriptPath(dir string, e os.DirEntry, cutoff time.Time, lstat func(string) (os.FileInfo, error)) (string, error) {
+	if e.IsDir() {
+		return "", nil
+	}
+	ok, err := filepath.Match(staleScriptPattern, e.Name())
+	if err != nil || !ok {
+		return "", nil
+	}
+	// ReadDir gives only direct child names. Keep the joined path anchored
+	// inside the explicitly configured work directory.
+	path := filepath.Join(dir, e.Name())
+	if filepath.Dir(path) != dir {
+		return "", nil
+	}
+	info, err := lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil // concurrently removed
+	}
+	if err != nil {
+		return "", fmt.Errorf("inspect stale script %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() || !info.ModTime().Before(cutoff) {
+		return "", nil // symlink, special file, or fresh script
+	}
+	return path, nil
 }
