@@ -127,8 +127,12 @@ func (s *Serve) Run(ctx context.Context) error {
 	// can never meet this agent's own active file; recent foreign files
 	// are preserved by the 24h age bound (see SweepStaleScripts).
 	if s.Config.WorkDir != "" {
-		if removed, err := SweepStaleScripts(s.Config.WorkDir); err == nil && removed > 0 {
+		removed, err := SweepStaleScripts(s.Config.WorkDir)
+		if removed > 0 {
 			fmt.Fprintf(os.Stderr, "serve: swept %d stale job scripts\n", removed)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "serve: stale job script sweep incomplete: %v\n", err)
 		}
 	}
 	if s.EnableHints && s.Hints != nil {

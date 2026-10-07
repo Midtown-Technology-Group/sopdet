@@ -41,13 +41,6 @@ func TestSweepStaleScriptsBounds(t *testing.T) {
 	}
 	nested := stageFixture(t, sub, "sopdet-job-nested.ps1", 48*time.Hour)
 
-	// Symlink with a matching name: never followed, never removed.
-	linkTarget := stageFixture(t, work, "real-target.ps1", 48*time.Hour)
-	link := filepath.Join(work, "sopdet-job-link.ps1")
-	if err := os.Symlink(linkTarget, link); err != nil {
-		t.Fatal(err)
-	}
-
 	removed, err := SweepStaleScripts(work)
 	if err != nil {
 		t.Fatalf("SweepStaleScripts: %v", err)
@@ -58,7 +51,24 @@ func TestSweepStaleScriptsBounds(t *testing.T) {
 	if exists(stale) {
 		t.Errorf("stale script was not removed: %s", stale)
 	}
-	for _, want := range []string{fresh, other, otherPattern, nested, link, linkTarget} {
+	for _, want := range []string{fresh, other, otherPattern, nested} {
+		if !exists(want) {
+			t.Errorf("protected file was removed: %s", want)
+		}
+	}
+}
+
+func TestSweepStaleScriptsPreservesSymlink(t *testing.T) {
+	work := t.TempDir()
+	linkTarget := stageFixture(t, work, "real-target.ps1", 48*time.Hour)
+	link := filepath.Join(work, "sopdet-job-link.ps1")
+	if err := os.Symlink(linkTarget, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if removed, err := SweepStaleScripts(work); err != nil || removed != 0 {
+		t.Fatalf("SweepStaleScripts = (%d, %v), want (0, nil)", removed, err)
+	}
+	for _, want := range []string{link, linkTarget} {
 		if !exists(want) {
 			t.Errorf("protected file was removed: %s", want)
 		}
@@ -74,5 +84,11 @@ func TestSweepStaleScriptsEmptyAndMissing(t *testing.T) {
 	}
 	if n, err := SweepStaleScripts(t.TempDir()); err != nil || n != 0 {
 		t.Errorf("clean dir: got (%d, %v), want (0, nil)", n, err)
+	}
+}
+
+func TestSweepStaleScriptsReportsInvalidWorkDir(t *testing.T) {
+	if removed, err := SweepStaleScripts(string([]byte{0})); err == nil || removed != 0 {
+		t.Fatalf("SweepStaleScripts = (%d, %v), want (0, error)", removed, err)
 	}
 }

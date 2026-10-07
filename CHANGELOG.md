@@ -20,6 +20,8 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
   deliberately not implemented: the frozen M0 device protocol exposes no
   renewal endpoint, so long jobs still rely on the server's `lost` policy;
   renewal tracks `Midtown-Technology-Group/bifrost#1059`.
+  Inspection and removal failures during the startup sweep are reported in
+  the serve log, including the count of files already removed.
 
 ## [0.2.0] - 2026-10-03
 

@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -70,7 +72,10 @@ func SweepStaleScripts(dir string) (int, error) {
 		}
 		info, err := os.Lstat(path)
 		if err != nil {
-			continue
+			if errors.Is(err, os.ErrNotExist) {
+				continue // concurrently removed
+			}
+			return removed, fmt.Errorf("inspect stale script %s after removing %d: %w", path, removed, err)
 		}
 		if !info.Mode().IsRegular() {
 			continue // symlink, device, socket, ... — never follow
@@ -78,9 +83,13 @@ func SweepStaleScripts(dir string) (int, error) {
 		if !info.ModTime().Before(cutoff) {
 			continue // fresh: possibly an active job's script
 		}
-		if os.Remove(path) == nil {
-			removed++
+		if err := os.Remove(path); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue // concurrently removed
+			}
+			return removed, fmt.Errorf("remove stale script %s after removing %d: %w", path, removed, err)
 		}
+		removed++
 	}
 	return removed, nil
 }
