@@ -1119,10 +1119,9 @@ func (winProcessCollector) Collect(_ context.Context, _ *Session) ([]schema.Reco
 		ParentProcessId uint32
 		WorkingSetSize  uint64
 		ExecutablePath  string
-		CommandLine     string
 		CreationDate    time.Time
 	}
-	if err := wmi.Query("SELECT Name,ProcessId,ParentProcessId,WorkingSetSize,ExecutablePath,CommandLine,CreationDate FROM Win32_Process", &rows); err != nil {
+	if err := wmi.Query("SELECT Name,ProcessId,ParentProcessId,WorkingSetSize,ExecutablePath,CreationDate FROM Win32_Process", &rows); err != nil {
 		return nil, err
 	}
 	out := make([]schema.Record, 0, len(rows))
@@ -1131,7 +1130,7 @@ func (winProcessCollector) Collect(_ context.Context, _ *Session) ([]schema.Reco
 			"key":  "process:" + strconv.Itoa(int(r.ProcessId)) + ":" + r.CreationDate.Format(time.RFC3339),
 			"name": r.Name, "pid": r.ProcessId, "parent_pid": r.ParentProcessId,
 			"working_set_bytes": int64(r.WorkingSetSize), "executable_path": r.ExecutablePath,
-			"command_line": r.CommandLine, "start_time": r.CreationDate.Format(time.RFC3339),
+			"start_time": r.CreationDate.Format(time.RFC3339),
 		})
 	}
 	return out, nil

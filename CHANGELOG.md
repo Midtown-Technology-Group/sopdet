@@ -17,6 +17,9 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
   variables or protected configuration instead of command-line flags. The
   deployment wrapper no longer copies those secrets into child arguments.
 
+- Optional process inventory no longer reads or exports process command lines,
+  which can contain unrelated credentials.
+
 ## [0.2.0] - 2026-10-03
 
 ### Added

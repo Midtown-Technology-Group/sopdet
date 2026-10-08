@@ -1290,7 +1290,6 @@ function Get-ProcessRecord {
                 parent_pid      = $_.ParentProcessId
                 working_set_bytes = $_.WorkingSetSize
                 executable_path = $_.ExecutablePath
-                command_line    = $_.CommandLine
                 start_time      = ConvertTo-Iso $_.CreationDate
             }
         }
