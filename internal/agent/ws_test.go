@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -49,6 +50,28 @@ func newHintClient(t *testing.T, baseURL, key string, onHint func()) *WSHintClie
 		t.Fatalf("NewWSHintClient: %v", err)
 	}
 	return ws
+}
+
+func TestHintClientRefusesCredentialRedirect(t *testing.T) {
+	var redirected atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirected.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(target.Close)
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", target.URL+"/target")
+		w.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(source.Close)
+	client := newHintClient(t, source.URL, testDeviceKey(), nil)
+	_, err := client.dial(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "redirect") {
+		t.Fatalf("expected websocket redirect refusal, got %v", err)
+	}
+	if redirected.Load() != 0 {
+		t.Fatal("redirect target received websocket authorization")
+	}
 }
 
 func TestHintClientDerivesHeaderOnlyURL(t *testing.T) {

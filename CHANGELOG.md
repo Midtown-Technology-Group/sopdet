@@ -7,6 +7,9 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ### Security
 
+- Device-control HTTP and WebSocket clients refuse redirects before sending
+  device credentials or trusting a redirected claim response.
+
 - Windows bootstrap and fleet fanout require an out-of-band SHA-256 pin before
   executing or copying an artifact. Same-channel manifests and the bootstrap
   verification bypass are no longer trusted for publisher authentication.

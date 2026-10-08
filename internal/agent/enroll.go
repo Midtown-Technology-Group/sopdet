@@ -67,11 +67,9 @@ func isLoopbackHost(hostname string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// enrollHTTPClient returns a client that refuses redirects so the one-time
-// enrollment POST body (and any future credential-bearing request) is never
-// re-sent to another scheme or host. The input client is shallow-copied;
-// its transport is reused.
-func enrollHTTPClient(client *http.Client) *http.Client {
+// credentialHTTPClient refuses redirects for every credential-bearing agent
+// request. The input client is shallow-copied so its transport can be reused.
+func credentialHTTPClient(client *http.Client) *http.Client {
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
@@ -83,7 +81,7 @@ func enrollHTTPClient(client *http.Client) *http.Client {
 				return err
 			}
 		}
-		return fmt.Errorf("refusing redirect during enrollment (credential-bearing request must not follow redirects)")
+		return fmt.Errorf("refusing redirect for credential-bearing request")
 	}
 	return &clone
 }
@@ -102,7 +100,7 @@ func Enroll(
 	if enrollmentToken == "" {
 		return DeviceState{}, fmt.Errorf("missing enrollment token")
 	}
-	client = enrollHTTPClient(client)
+	client = credentialHTTPClient(client)
 
 	body, err := json.Marshal(map[string]string{
 		"enrollment_token": enrollmentToken,

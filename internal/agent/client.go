@@ -208,7 +208,7 @@ func (c *Client) post(
 		req.Header.Set("Accept", "application/json")
 		req.Header.Set("X-Bifrost-Key", c.DeviceKey)
 
-		resp, err := c.HTTP.Do(req)
+		resp, err := credentialHTTPClient(c.HTTP).Do(req)
 		if err != nil {
 			lastErr = err
 			continue

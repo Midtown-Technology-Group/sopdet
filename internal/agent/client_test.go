@@ -30,6 +30,30 @@ func newTestClient(spoolDir string) *Client {
 	return c
 }
 
+func TestDeviceHTTPRefusesCredentialRedirect(t *testing.T) {
+	var redirected atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirected.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(target.Close)
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", target.URL+"/target")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(source.Close)
+	c := newTestClient(t.TempDir())
+	c.BaseURL = source.URL
+	c.MaxRetries = 1
+	_, err := c.Heartbeat(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "redirect") {
+		t.Fatalf("expected redirect refusal, got %v", err)
+	}
+	if redirected.Load() != 0 {
+		t.Fatal("redirect target received a credential-bearing request")
+	}
+}
+
 func decodeBody(t *testing.T, r *http.Request) map[string]any {
 	t.Helper()
 	var m map[string]any
