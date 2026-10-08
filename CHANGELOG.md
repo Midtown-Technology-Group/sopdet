@@ -7,6 +7,10 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ### Security
 
+- Fleet fanout accepts only a validated collection profile and passes it as a
+  typed argument to the remote collector. SMB/schtasks deployment, which put
+  administrative passwords in process command lines, is removed; WinRM remains.
+
 - Inventory ingest requires HTTPS except for loopback testing and refuses
   redirects before sending device data or the engagement key.
 

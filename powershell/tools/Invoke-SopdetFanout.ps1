@@ -30,14 +30,11 @@
   Admin credential for the targets. Use -UseCurrentSession instead to reuse
   the operator's session.
 
-.PARAMETER Transport
-  WinRM (preferred) or SMB.
-
 .PARAMETER RemoteDirectory
   Target-side working directory. Default C:\ProgramData\Sopdet.
 
-.PARAMETER CollectorArgument
-  Extra arguments for the collector, e.g. "-Profile quick".
+.PARAMETER CollectionProfile
+  Collector profile: minimal, quick, or full.
 
 .PARAMETER KillSwitchPath
   If this file exists, the run aborts before touching any target.
@@ -51,7 +48,7 @@
 .EXAMPLE
   .\Invoke-SopdetFanout.ps1 -TargetFile .\targets.txt -AuthorizationRef ENG-2026-014 `
       -ExpectedCollectorSha256 <64-character-sha256> `
-      -Credential (Get-Credential) -CollectorArgument "-Profile quick" -Confirm
+      -Credential (Get-Credential) -CollectionProfile quick -Confirm
 #>
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param(
@@ -64,14 +61,12 @@ param(
     [string]$ExpectedCollectorSha256,
     [string]$ConfigPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'inventory.config.json'),
     [System.Management.Automation.PSCredential]$Credential,
-    [ValidateSet('WinRM', 'SMB')][string]$Transport = 'WinRM',
     [string]$RemoteDirectory = 'C:\ProgramData\Sopdet',
-    [string]$CollectorArgument = '-Profile quick',
+    [ValidateSet('minimal', 'quick', 'full')][string]$CollectionProfile = 'quick',
     [string]$ResultDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'results'),
     [string]$AuditPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'results\fanout-audit.jsonl'),
     [string]$KillSwitchPath,
     [int]$ThrottleMilliseconds = 750,
-    [int]$TimeoutSecond = 300,
     [switch]$UseCurrentSession,
     [switch]$SkipResultCollection,
     [switch]$RemoveRemoteFiles
@@ -112,7 +107,7 @@ function Invoke-TargetViaWinRm {
         [Parameter(Mandatory = $true)][string]$Collector,
         [string]$Config,
         [Parameter(Mandatory = $true)][string]$RemoteDir,
-        [Parameter(Mandatory = $true)][string]$Argument,
+        [Parameter(Mandatory = $true)][string]$Profile,
         [Parameter(Mandatory = $true)][string]$Results,
         [System.Management.Automation.PSCredential]$Cred,
         [switch]$CurrentSession,
@@ -128,9 +123,9 @@ function Invoke-TargetViaWinRm {
         if ($Config -and (Test-Path $Config)) { Copy-Item -Path $Config -Destination $RemoteDir -ToSession $session -Force }
 
         $remoteOut = Join-Path $RemoteDir ("$Computer.json")
-        $command = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$RemoteDir\Invoke-SopdetInventory.ps1`" $Argument -OutputPath `"$remoteOut`""
-        $exitCode = Invoke-Command -Session $session -ScriptBlock {
-            (Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $using:command) -Wait -PassThru -WindowStyle Hidden).ExitCode
+        $exitCode = Invoke-Command -Session $session -ArgumentList @($RemoteDir, $Profile, $remoteOut) -ScriptBlock {
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $args[0] 'Invoke-SopdetInventory.ps1') -Profile $args[1] -OutputPath $args[2] | Out-Null
+            $LASTEXITCODE
         }
 
         $localCopy = $null
@@ -146,51 +141,6 @@ function Invoke-TargetViaWinRm {
     } finally {
         if ($session) { Remove-PSSession $session -ErrorAction SilentlyContinue }
     }
-}
-
-function Invoke-TargetViaSmb {
-    param(
-        [Parameter(Mandatory = $true)][string]$Computer,
-        [Parameter(Mandatory = $true)][string]$Collector,
-        [string]$Config,
-        [Parameter(Mandatory = $true)][string]$RemoteDir,
-        [Parameter(Mandatory = $true)][string]$Argument,
-        [Parameter(Mandatory = $true)][string]$Results,
-        [Parameter(Mandatory = $true)][System.Management.Automation.PSCredential]$Cred,
-        [Parameter(Mandatory = $true)][int]$TimeoutSeconds,
-        [switch]$SkipCollect,
-        [switch]$Cleanup
-    )
-    $relative = $RemoteDir -replace '^[A-Za-z]:\\', ''
-    $unc = "\\$Computer\C$\$relative"
-    New-Item -ItemType Directory -Force -Path $unc | Out-Null
-    Copy-Item -Path $Collector -Destination $unc -Force
-    if ($Config -and (Test-Path $Config)) { Copy-Item -Path $Config -Destination $unc -Force }
-
-    $remoteOut = Join-Path $RemoteDir ("$Computer.json")
-    $taskName = 'SopdetInventoryAssessment'
-    $taskRun = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$RemoteDir\Invoke-SopdetInventory.ps1`" $Argument -OutputPath `"$remoteOut`""
-    Write-Warning 'SMB transport passes credentials to schtasks; prefer WinRM where available.'
-    $user = $Cred.UserName
-    $pass = $Cred.GetNetworkCredential().Password
-    & schtasks /S $Computer /U $user /P $pass /Create /TN $taskName /TR $taskRun /SC ONCE /ST 00:00 /RL HIGHEST /F | Out-Null
-    & schtasks /S $Computer /U $user /P $pass /Run /TN $taskName | Out-Null
-
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    while ((Get-Date) -lt $deadline) {
-        Start-Sleep -Seconds 5
-        $query = & schtasks /S $Computer /U $user /P $pass /Query /TN $taskName /FO LIST 2>$null | Out-String
-        if ($query -match 'Ready') { break }
-    }
-    $localCopy = $null
-    if (-not $SkipCollect) {
-        if (-not (Test-Path $Results)) { New-Item -ItemType Directory -Force -Path $Results | Out-Null }
-        $localCopy = Join-Path $Results ("$Computer.json")
-        try { Copy-Item -Path (Join-Path $unc ("$Computer.json")) -Destination $localCopy -Force } catch { $localCopy = $null }
-    }
-    & schtasks /S $Computer /U $user /P $pass /Delete /TN $taskName /F | Out-Null
-    if ($Cleanup) { Remove-Item -Path $unc -Recurse -Force -ErrorAction SilentlyContinue }
-    return [pscustomobject]@{ ExitCode = 0; ResultPath = $localCopy }
 }
 
 if ($KillSwitchPath -and (Test-Path $KillSwitchPath)) {
@@ -219,35 +169,31 @@ if (-not $UseCurrentSession -and -not $Credential) { throw 'Provide -Credential 
 
 Write-Output "Authorization : $AuthorizationRef"
 Write-Output "Collector     : $CollectorPath ($($collectorHash.Substring(0,12))...)"
-Write-Output "Transport     : $Transport"
+Write-Output "Transport     : WinRM"
 Write-Output "Targets       : $($computers.Count)"
 Write-Output "Audit         : $AuditPath"
 
 $results = New-Object System.Collections.Generic.List[object]
 foreach ($computer in $computers) {
-    if (-not $PSCmdlet.ShouldProcess($computer, "Deploy and run read-only inventory via $Transport")) { continue }
+    if (-not $PSCmdlet.ShouldProcess($computer, 'Deploy and run read-only inventory via WinRM')) { continue }
     try {
         $common = @{
             Computer   = $computer
             Collector  = $CollectorPath
             Config     = $ConfigPath
             RemoteDir  = $RemoteDirectory
-            Argument   = $CollectorArgument
+            Profile    = $CollectionProfile
             Results    = $ResultDirectory
             SkipCollect = $SkipResultCollection
             Cleanup    = $RemoveRemoteFiles
         }
-        if ($Transport -eq 'WinRM') {
-            $outcome = Invoke-TargetViaWinRm @common -Cred $Credential -CurrentSession:$UseCurrentSession
-        } else {
-            $outcome = Invoke-TargetViaSmb @common -Cred $Credential -TimeoutSeconds $TimeoutSecond
-        }
+        $outcome = Invoke-TargetViaWinRm @common -Cred $Credential -CurrentSession:$UseCurrentSession
         Write-Output "[ok]   $computer  exit=$($outcome.ExitCode)  result=$($outcome.ResultPath)"
-        Write-AuditRecord -AuditFile $AuditPath -Authorization $AuthorizationRef -Computer $computer -Mode $Transport -Status 'success' -Detail "exit=$($outcome.ExitCode); result=$($outcome.ResultPath)" -CollectorHash $collectorHash
+        Write-AuditRecord -AuditFile $AuditPath -Authorization $AuthorizationRef -Computer $computer -Mode 'WinRM' -Status 'success' -Detail "exit=$($outcome.ExitCode); result=$($outcome.ResultPath)" -CollectorHash $collectorHash
         $results.Add([pscustomobject]@{ Target = $computer; Status = 'success'; ExitCode = $outcome.ExitCode; ResultPath = $outcome.ResultPath })
     } catch {
         Write-Warning "[fail] $computer  $($_.Exception.Message)"
-        Write-AuditRecord -AuditFile $AuditPath -Authorization $AuthorizationRef -Computer $computer -Mode $Transport -Status 'failed' -Detail $_.Exception.Message -CollectorHash $collectorHash
+        Write-AuditRecord -AuditFile $AuditPath -Authorization $AuthorizationRef -Computer $computer -Mode 'WinRM' -Status 'failed' -Detail $_.Exception.Message -CollectorHash $collectorHash
         $results.Add([pscustomobject]@{ Target = $computer; Status = 'failed'; Error = $_.Exception.Message })
     }
     Start-Sleep -Milliseconds ($ThrottleMilliseconds + (Get-Random -Maximum 500))
