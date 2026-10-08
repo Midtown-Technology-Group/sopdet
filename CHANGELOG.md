@@ -5,6 +5,12 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- Ingest, enrollment, and device credentials are accepted through environment
+  variables or protected configuration instead of command-line flags. The
+  deployment wrapper no longer copies those secrets into child arguments.
+
 ## [0.2.0] - 2026-10-03
 
 ### Added

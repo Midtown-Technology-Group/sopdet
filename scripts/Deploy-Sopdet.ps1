@@ -8,8 +8,9 @@
   removes the mark-of-the-web, and then either reports the version, runs a
   one-shot inventory scan, or starts resident serve mode.
 
-  Designed to run under NinjaOne as SYSTEM. Secrets (-ApiKey, -EnrollToken,
-  -DeviceKey) are never written to logs or output.
+  Designed to run under NinjaOne as SYSTEM. Supply secrets through
+  SOPDET_API_KEY, SOPDET_ENROLLMENT_TOKEN, and SOPDET_DEVICE_KEY environment
+  variables so they are not copied into the collector command line.
 
 .PARAMETER Url
   Binary to download. Defaults to the rolling unsigned GitHub release.
@@ -29,9 +30,6 @@
 .PARAMETER Endpoint
   Bifrost ingest endpoint for a one-shot scan.
 
-.PARAMETER ApiKey
-  Ingest key for a one-shot scan. Secret.
-
 .PARAMETER Compress
   gzip+base64 the one-shot payload.
 
@@ -44,12 +42,6 @@
 .PARAMETER BifrostUrl
   Bifrost base URL for serve mode.
 
-.PARAMETER EnrollToken
-  One-time enrollment token for serve mode. Secret.
-
-.PARAMETER DeviceKey
-  Device key for serve mode. Secret.
-
 .PARAMETER DownloadOnly
   Verify and stop before running the binary.
 
@@ -57,10 +49,12 @@
   ./scripts/Deploy-Sopdet.ps1 -Profile minimal -DryRun
 
 .EXAMPLE
-  ./scripts/Deploy-Sopdet.ps1 -Endpoint https://bifrost.example.com/api/endpoints/<id> -ApiKey <key> -Profile quick -Compress
+  Set SOPDET_API_KEY in the deployment environment, then run:
+  ./scripts/Deploy-Sopdet.ps1 -Endpoint https://bifrost.example.com/api/endpoints/<id> -Profile quick -Compress
 
 .EXAMPLE
-  ./scripts/Deploy-Sopdet.ps1 -Serve -BifrostUrl https://bifrost.example.com -EnrollToken bfen_<id>_<secret>
+  Set SOPDET_ENROLLMENT_TOKEN in the deployment environment, then run:
+  ./scripts/Deploy-Sopdet.ps1 -Serve -BifrostUrl https://bifrost.example.com
 #>
 #Requires -Version 3.0
 [CmdletBinding()]
@@ -73,15 +67,12 @@ param(
     [Alias('Profile')]
     [string]$CollectionProfile = 'quick',
     [string]$Endpoint,
-    [string]$ApiKey = $env:SOPDET_API_KEY,
     [switch]$Compress,
     [switch]$DryRun,
     [switch]$IncludeProcesses,
     [switch]$IncludeAppx,
     [switch]$Serve,
     [string]$BifrostUrl = $env:SOPDET_BIFROST_URL,
-    [string]$EnrollToken = $env:SOPDET_ENROLLMENT_TOKEN,
-    [string]$DeviceKey = $env:SOPDET_DEVICE_KEY,
     [switch]$SkipVerify,
     [switch]$DownloadOnly
 )
@@ -183,13 +174,10 @@ if ($DownloadOnly) {
 if ($Serve) {
     if (-not $BifrostUrl) { throw '-Serve requires -BifrostUrl' }
     $exeArgs = @('-serve', '-bifrost-url', $BifrostUrl)
-    if ($EnrollToken) { $exeArgs += @('-enroll-token', $EnrollToken) }
-    if ($DeviceKey) { $exeArgs += @('-device-key', $DeviceKey) }
     $result.status = 'serve-started'
 } else {
     $exeArgs = @('-profile', $CollectionProfile)
     if ($Endpoint) { $exeArgs += @('-endpoint', $Endpoint) }
-    if ($ApiKey) { $exeArgs += @('-api-key', $ApiKey) }
     if ($Compress) { $exeArgs += '-compress' }
     if ($DryRun) { $exeArgs += @('-dry-run', '-out', (Join-Path $InstallDir 'last-scan.json')) }
     if ($IncludeProcesses) { $exeArgs += '-include-processes' }

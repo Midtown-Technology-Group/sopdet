@@ -25,7 +25,6 @@ func main() {
 	var (
 		cfgPath    string
 		endpoint   string
-		apiKey     string
 		profile    string
 		outputPath string
 		proxy      string
@@ -45,15 +44,12 @@ func main() {
 		serve          bool
 		serveCfgPath   string
 		bifrostURL     string
-		deviceKey      string
-		enrollToken    string
 		serveStatePath string
 		workDir        string
 		pollInterval   time.Duration
 	)
 	flag.StringVar(&cfgPath, "config", "", "path to inventory.config.json (default: alongside the binary)")
 	flag.StringVar(&endpoint, "endpoint", "", "Bifrost ingest endpoint URL")
-	flag.StringVar(&apiKey, "api-key", "", "per-engagement ingest key (X-Bifrost-Key)")
 	flag.StringVar(&profile, "profile", "", "minimal|quick|full")
 	flag.StringVar(&outputPath, "out", "", "write the envelope to this file")
 	flag.StringVar(&proxy, "proxy", "", "explicit proxy URL")
@@ -69,10 +65,8 @@ func main() {
 	flag.BoolVar(&noBrowser, "no-browser", false, "do not auto-open the progress page")
 	flag.BoolVar(&quiet, "quiet", false, "suppress the banner and per-entity progress")
 	flag.BoolVar(&serve, "serve", false, "resident serve mode: enroll/hold device identity and (later) run ad-hoc jobs")
-	flag.StringVar(&serveCfgPath, "serve-config", "", "path to serve config JSON (flags > env > file)")
+	flag.StringVar(&serveCfgPath, "serve-config", "", "path to serve config JSON (env > file for secrets)")
 	flag.StringVar(&bifrostURL, "bifrost-url", "", "Bifrost base URL for serve mode (env SOPDET_BIFROST_URL)")
-	flag.StringVar(&deviceKey, "device-key", "", "device key (env SOPDET_DEVICE_KEY); secret, never logged")
-	flag.StringVar(&enrollToken, "enroll-token", "", "one-time enrollment token (env SOPDET_ENROLLMENT_TOKEN); secret, never logged")
 	flag.StringVar(&serveStatePath, "serve-state", "", "path to persisted device state (env SOPDET_SERVE_STATE)")
 	flag.StringVar(&workDir, "work-dir", "", "working directory for script temp files (env SOPDET_WORK_DIR)")
 	flag.DurationVar(&pollInterval, "poll-interval", 0, "HTTP claim poll interval while WS is down (env SOPDET_POLL_INTERVAL, default 10s)")
@@ -85,12 +79,10 @@ func main() {
 
 	if serve {
 		flags := agent.ServeConfig{
-			BifrostURL:      bifrostURL,
-			DeviceKey:       deviceKey,
-			EnrollmentToken: enrollToken,
-			StatePath:       serveStatePath,
-			PollInterval:    pollInterval,
-			WorkDir:         workDir,
+			BifrostURL:   bifrostURL,
+			StatePath:    serveStatePath,
+			PollInterval: pollInterval,
+			WorkDir:      workDir,
 			// ldflag-overridden build version -> heartbeat agent_version.
 			AgentVersion: Version,
 		}
@@ -118,13 +110,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 		os.Exit(2)
 	}
+	if key := os.Getenv("SOPDET_API_KEY"); key != "" {
+		cfg.APIKey = key
+	}
 
 	flag.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "endpoint":
 			cfg.Endpoint = endpoint
-		case "api-key":
-			cfg.APIKey = apiKey
 		case "profile":
 			cfg.Profile = profile
 		case "out":
