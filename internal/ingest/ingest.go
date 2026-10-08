@@ -11,11 +11,13 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Midtown-Technology-Group/sopdet/internal/schema"
@@ -74,7 +76,9 @@ func (o *Options) jitter(d time.Duration) time.Duration {
 
 func (o *Options) client() (*http.Client, error) {
 	if o.HTTPClient != nil {
-		return o.HTTPClient, nil
+		clone := *o.HTTPClient
+		clone.CheckRedirect = rejectIngestRedirect
+		return &clone, nil
 	}
 	tr := &http.Transport{}
 	if o.Proxy != "" {
@@ -84,7 +88,27 @@ func (o *Options) client() (*http.Client, error) {
 		}
 		tr.Proxy = http.ProxyURL(pu)
 	}
-	return &http.Client{Timeout: 90 * time.Second, Transport: tr}, nil
+	return &http.Client{Timeout: 90 * time.Second, Transport: tr, CheckRedirect: rejectIngestRedirect}, nil
+}
+
+func rejectIngestRedirect(_ *http.Request, _ []*http.Request) error {
+	return fmt.Errorf("refusing ingest redirect")
+}
+
+func validateEndpoint(raw string) error {
+	u, err := url.ParseRequestURI(raw)
+	if err != nil || u.Host == "" || u.User != nil {
+		return fmt.Errorf("invalid ingest endpoint")
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	host := u.Hostname()
+	ip := net.ParseIP(host)
+	if u.Scheme == "http" && (strings.EqualFold(host, "localhost") || ip != nil && ip.IsLoopback()) {
+		return nil
+	}
+	return fmt.Errorf("ingest endpoint must use https (http is allowed only on loopback)")
 }
 
 func gzipBase64(s string) (string, error) {
@@ -122,6 +146,9 @@ func scopedSpoolDir(base, endpoint, apiKey string) string {
 // Send delivers an envelope, draining any previously spooled chunks first.
 func Send(env *schema.Envelope, opts Options) (Result, error) {
 	res := Result{}
+	if err := validateEndpoint(opts.Endpoint); err != nil {
+		return res, err
+	}
 	opts.SpoolDir = scopedSpoolDir(opts.SpoolDir, opts.Endpoint, opts.APIKey)
 	full, err := json.Marshal(env)
 	if err != nil {

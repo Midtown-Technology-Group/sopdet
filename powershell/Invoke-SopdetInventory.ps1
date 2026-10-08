@@ -309,7 +309,18 @@ function Get-Wire([object]$ChunkEnv, [bool]$UseCompress) {
     return $c
 }
 
+function Assert-IngestEndpoint([string]$Url) {
+    $uri = $null
+    if (-not [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$uri) -or -not $uri.Host -or $uri.UserInfo) {
+        throw 'Invalid ingest endpoint.'
+    }
+    if ($uri.Scheme -eq 'https') { return }
+    if ($uri.Scheme -eq 'http' -and $uri.IsLoopback) { return }
+    throw 'Ingest endpoint must use HTTPS (HTTP is allowed only on loopback).'
+}
+
 function Invoke-IngestPost([string]$Url, [string]$ApiKey, [string]$Body, [string]$Proxy) {
+    Assert-IngestEndpoint $Url
     $headers = @{}
     if ($ApiKey) { $headers['X-Bifrost-Key'] = $ApiKey }
     $req = @{
@@ -319,6 +330,7 @@ function Invoke-IngestPost([string]$Url, [string]$ApiKey, [string]$Body, [string
         ContentType = 'application/json; charset=utf-8'
         Body        = [Text.Encoding]::UTF8.GetBytes($Body)
         TimeoutSec  = 90
+        MaximumRedirection = 0
         ErrorAction = 'Stop'
     }
     if ($Proxy) { $req['Proxy'] = $Proxy }
@@ -358,6 +370,7 @@ function Get-SpoolScope([string]$Url, [string]$ApiKey) {
 }
 
 function Send-Ingest($Header, $Entities, [string]$Url, [string]$ApiKey, [bool]$UseCompress, [int]$ChunkBytes, [int]$MaxRetries, [string]$Proxy, [string]$SpoolDir, [string]$ScanId) {
+    Assert-IngestEndpoint $Url
     $SpoolDir = Join-Path $SpoolDir (Get-SpoolScope $Url $ApiKey)
     $delivered = $true
     if (Test-Path $SpoolDir) {

@@ -7,6 +7,9 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ### Security
 
+- Inventory ingest requires HTTPS except for loopback testing and refuses
+  redirects before sending device data or the engagement key.
+
 - Release publication starts only from a pushed, annotated version tag whose
   target is the triggering commit on main. Signing and release jobs have scoped
   token permissions; arbitrary-tag manual dispatch is removed.

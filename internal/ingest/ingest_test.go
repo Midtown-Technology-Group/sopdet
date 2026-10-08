@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +20,44 @@ import (
 
 var noSleep = func(time.Duration) {}
 var noJitter = func(time.Duration) time.Duration { return 0 }
+
+func TestEndpointRequiresHTTPSOrLoopback(t *testing.T) {
+	for _, endpoint := range []string{"http://example.invalid/ingest", "ftp://example.invalid/ingest", "https://user:pass@example.invalid/ingest"} {
+		if err := validateEndpoint(endpoint); err == nil {
+			t.Errorf("accepted unsafe endpoint %q", endpoint)
+		}
+	}
+	for _, endpoint := range []string{"https://example.invalid/ingest", "http://127.0.0.1:8080/ingest", "http://localhost/ingest"} {
+		if err := validateEndpoint(endpoint); err != nil {
+			t.Errorf("rejected safe endpoint %q: %v", endpoint, err)
+		}
+	}
+}
+
+func TestIngestRefusesRedirectBeforeSendingKey(t *testing.T) {
+	var redirected atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirected.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(target.Close)
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", target.URL+"/target")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(source.Close)
+	env := testEnvelope()
+	res, err := Send(env, Options{
+		Endpoint: source.URL, APIKey: "synthetic-key", ScanID: env.ScanID,
+		MaxRetries: 1, Sleep: noSleep, Jitter: noJitter,
+	})
+	if err != nil || res.Delivered {
+		t.Fatalf("redirected ingest should fail delivery: %+v, %v", res, err)
+	}
+	if redirected.Load() != 0 {
+		t.Fatal("redirect target received inventory or key")
+	}
+}
 
 type received struct {
 	payload   string
