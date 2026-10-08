@@ -7,6 +7,10 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ### Security
 
+- Release publication starts only from a pushed, annotated version tag whose
+  target is the triggering commit on main. Signing and release jobs have scoped
+  token permissions; arbitrary-tag manual dispatch is removed.
+
 - Pending inventory is isolated by collector implementation, ingest endpoint,
   and credential identity. Legacy unscoped spool files are retained for manual
   review and are not replayed automatically.
