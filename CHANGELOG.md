@@ -7,6 +7,10 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ### Security
 
+- Pending inventory is isolated by collector implementation, ingest endpoint,
+  and credential identity. Legacy unscoped spool files are retained for manual
+  review and are not replayed automatically.
+
 - Device-control HTTP and WebSocket clients refuse redirects before sending
   device credentials or trusting a redirected claim response.
 

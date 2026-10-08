@@ -5,6 +5,7 @@ package ingest
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -108,9 +109,20 @@ func wire(payload string, compress bool) (string, error) {
 	return payload, nil
 }
 
+// scopedSpoolDir binds pending inventory to its original implementation,
+// endpoint and credential. Legacy unscoped files are never replayed.
+func scopedSpoolDir(base, endpoint, apiKey string) string {
+	if base == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("go\x00" + endpoint + "\x00" + apiKey))
+	return filepath.Join(base, fmt.Sprintf("go-%x", sum[:16]))
+}
+
 // Send delivers an envelope, draining any previously spooled chunks first.
 func Send(env *schema.Envelope, opts Options) (Result, error) {
 	res := Result{}
+	opts.SpoolDir = scopedSpoolDir(opts.SpoolDir, opts.Endpoint, opts.APIKey)
 	full, err := json.Marshal(env)
 	if err != nil {
 		return res, err
@@ -265,7 +277,7 @@ func (o *Options) spool(index int, payload []byte) error {
 	if o.SpoolDir == "" {
 		return nil
 	}
-	if err := os.MkdirAll(o.SpoolDir, 0o755); err != nil {
+	if err := os.MkdirAll(o.SpoolDir, 0o700); err != nil {
 		return err
 	}
 	name := fmt.Sprintf("%s-%d.json", o.ScanID, index)

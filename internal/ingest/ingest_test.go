@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -165,7 +166,7 @@ func TestRetryThenSuccess(t *testing.T) {
 	}
 }
 
-func TestSpoolThenDrain(t *testing.T) {
+func TestSpoolDoesNotReplayAcrossEndpoints(t *testing.T) {
 	spool := filepath.Join(t.TempDir(), "spool")
 	bad, _, _ := recorder(t, 1_000, 503)
 	env := testEnvelope()
@@ -189,6 +190,25 @@ func TestSpoolThenDrain(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !res2.Delivered || res2.Spooled != 0 {
-		t.Fatalf("expected drain + deliver, got %+v (received %d)", res2, len(*got))
+		t.Fatalf("expected new endpoint delivery, got %+v (received %d)", res2, len(*got))
+	}
+	if len(*got) != res2.Chunks {
+		t.Fatalf("new endpoint received %d chunks; want only %d current chunks", len(*got), res2.Chunks)
+	}
+	old, err := os.ReadDir(scopedSpoolDir(spool, bad.URL, ""))
+	if err != nil || len(old) == 0 {
+		t.Fatalf("old endpoint spool should remain quarantined: %v", err)
+	}
+}
+
+func TestSpoolScopeChangesWithCredentialAndImplementation(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "spool")
+	a := scopedSpoolDir(base, "https://example.invalid/ingest", "synthetic-key-a")
+	b := scopedSpoolDir(base, "https://example.invalid/ingest", "synthetic-key-b")
+	if a == b || a == base || b == base {
+		t.Fatal("spool scope did not bind credential identity")
+	}
+	if scopedSpoolDir(base, "https://other.invalid/ingest", "synthetic-key-a") == a {
+		t.Fatal("spool scope did not bind endpoint")
 	}
 }

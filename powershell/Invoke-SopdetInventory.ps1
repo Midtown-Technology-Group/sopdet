@@ -346,7 +346,19 @@ function Limit-EntitySize($Ent, $Header, [string]$Name, [bool]$UseCompress, [int
     }
 }
 
+function Get-SpoolScope([string]$Url, [string]$ApiKey) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes("ps`0$Url`0$ApiKey")
+        $hash = $sha.ComputeHash($bytes)
+        return 'ps-' + ([BitConverter]::ToString($hash) -replace '-', '').Substring(0, 32).ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
+}
+
 function Send-Ingest($Header, $Entities, [string]$Url, [string]$ApiKey, [bool]$UseCompress, [int]$ChunkBytes, [int]$MaxRetries, [string]$Proxy, [string]$SpoolDir, [string]$ScanId) {
+    $SpoolDir = Join-Path $SpoolDir (Get-SpoolScope $Url $ApiKey)
     $delivered = $true
     if (Test-Path $SpoolDir) {
         foreach ($f in (Get-ChildItem $SpoolDir -Filter '*.json' -ErrorAction SilentlyContinue | Sort-Object Name)) {
