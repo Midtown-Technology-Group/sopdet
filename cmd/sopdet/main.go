@@ -110,9 +110,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 		os.Exit(2)
 	}
-	if key := os.Getenv("SOPDET_API_KEY"); key != "" {
-		cfg.APIKey = key
-	}
 
 	flag.Visit(func(f *flag.Flag) {
 		switch f.Name {

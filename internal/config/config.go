@@ -42,23 +42,24 @@ func Defaults() Config {
 // numeric defaults are preserved by starting from Defaults().
 func Load(path string) (Config, error) {
 	cfg := Defaults()
-	if path == "" {
-		return cfg, nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return cfg, nil
+	if path != "" {
+		data, err := os.ReadFile(path)
+		if err != nil && !os.IsNotExist(err) {
+			return cfg, err
 		}
-		return cfg, err
+		if err == nil {
+			// Tolerate a UTF-8 BOM: Windows editors (and PowerShell's Out-File)
+			// routinely write one, and it is not valid JSON whitespace.
+			data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
+			if err := json.Unmarshal(data, &cfg); err != nil {
+				return cfg, err
+			}
+			applyDefaults(&cfg)
+		}
 	}
-	// Tolerate a UTF-8 BOM: Windows editors (and PowerShell's Out-File)
-	// routinely write one, and it is not valid JSON whitespace.
-	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return cfg, err
+	if key := os.Getenv("SOPDET_API_KEY"); key != "" {
+		cfg.APIKey = key
 	}
-	applyDefaults(&cfg)
 	return cfg, nil
 }
 
