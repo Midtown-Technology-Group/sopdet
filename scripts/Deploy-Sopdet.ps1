@@ -3,8 +3,8 @@
   Deploy the Sopdet Windows agent from the GitHub release channel.
 
 .DESCRIPTION
-  Downloads the unsigned Windows build from the rolling GitHub release (or an
-  explicit URL), verifies its SHA-256 against the release MANIFEST.sha256,
+  Downloads the Windows build from the rolling GitHub release (or an explicit
+  URL), verifies its SHA-256 against an operator-supplied out-of-band pin,
   removes the mark-of-the-web, and then either reports the version, runs a
   one-shot inventory scan, or starts resident serve mode.
 
@@ -15,14 +15,11 @@
 .PARAMETER Url
   Binary to download. Defaults to the rolling unsigned GitHub release.
 
-.PARAMETER ManifestUrl
-  MANIFEST.sha256 used to verify the download. Pass -SkipVerify to disable.
-
 .PARAMETER InstallDir
   Target directory. Defaults to C:\ProgramData\sopdet.
 
 .PARAMETER ExpectedSha256
-  Explicit hash to verify against, overriding the manifest.
+  Required SHA-256 obtained from a trusted source separate from the download.
 
 .PARAMETER Profile
   Inventory profile for a one-shot scan: minimal, quick, or full.
@@ -46,22 +43,23 @@
   Verify and stop before running the binary.
 
 .EXAMPLE
-  ./scripts/Deploy-Sopdet.ps1 -Profile minimal -DryRun
+  ./scripts/Deploy-Sopdet.ps1 -ExpectedSha256 <64-character-sha256> -Profile minimal -DryRun
 
 .EXAMPLE
   Set SOPDET_API_KEY in the deployment environment, then run:
-  ./scripts/Deploy-Sopdet.ps1 -Endpoint https://bifrost.example.com/api/endpoints/<id> -Profile quick -Compress
+  ./scripts/Deploy-Sopdet.ps1 -ExpectedSha256 <64-character-sha256> -Endpoint https://bifrost.example.com/api/endpoints/<id> -Profile quick -Compress
 
 .EXAMPLE
   Set SOPDET_ENROLLMENT_TOKEN in the deployment environment, then run:
-  ./scripts/Deploy-Sopdet.ps1 -Serve -BifrostUrl https://bifrost.example.com
+  ./scripts/Deploy-Sopdet.ps1 -ExpectedSha256 <64-character-sha256> -Serve -BifrostUrl https://bifrost.example.com
 #>
 #Requires -Version 3.0
 [CmdletBinding()]
 param(
     [string]$Url = 'https://github.com/Midtown-Technology-Group/sopdet/releases/latest/download/sopdet-windows-amd64.exe',
-    [string]$ManifestUrl = 'https://github.com/Midtown-Technology-Group/sopdet/releases/latest/download/MANIFEST.sha256',
     [string]$InstallDir = (Join-Path $env:ProgramData 'sopdet'),
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9A-Fa-f]{64}$')]
     [string]$ExpectedSha256,
     [ValidateSet('minimal', 'quick', 'full')]
     [Alias('Profile')]
@@ -73,7 +71,6 @@ param(
     [switch]$IncludeAppx,
     [switch]$Serve,
     [string]$BifrostUrl = $env:SOPDET_BIFROST_URL,
-    [switch]$SkipVerify,
     [switch]$DownloadOnly
 )
 
@@ -101,19 +98,6 @@ function Get-Sha256Hex {
     return ([BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
 }
 
-function Get-ManifestHash {
-    param([Parameter(Mandatory = $true)][string]$Manifest, [Parameter(Mandatory = $true)][string]$FileName)
-    foreach ($line in ($Manifest -split "`n")) {
-        $trimmed = $line.Trim()
-        if (-not $trimmed) { continue }
-        $parts = $trimmed -split '\s+', 2
-        if ($parts.Count -eq 2 -and $parts[1].Trim() -eq $FileName) {
-            return $parts[0].Trim().ToLowerInvariant()
-        }
-    }
-    return $null
-}
-
 $asset = Split-Path -Leaf ([Uri]$Url).AbsolutePath
 if (-not (Test-Path $InstallDir)) {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
@@ -124,31 +108,12 @@ Write-Output "downloading $asset"
 Invoke-WebRequest -Uri $Url -OutFile $exe -UseBasicParsing -TimeoutSec 120
 
 $actual = Get-Sha256Hex -Path $exe
-$expected = $ExpectedSha256
-if (-not $expected -and -not $SkipVerify) {
-    try {
-        $manifestRaw = (Invoke-WebRequest -Uri $ManifestUrl -UseBasicParsing -TimeoutSec 60).Content
-        if ($manifestRaw -is [byte[]]) {
-            $manifest = [System.Text.Encoding]::UTF8.GetString($manifestRaw)
-        } else {
-            $manifest = [string]$manifestRaw
-        }
-        $expected = Get-ManifestHash -Manifest $manifest -FileName $asset
-    } catch {
-        Write-Output "manifest unavailable: $($_.Exception.Message)"
-    }
-}
-$verified = $false
-if ($expected) {
-    $verified = ($actual -eq $expected.ToLowerInvariant())
-    if (-not $verified) {
-        Remove-Item -Path $exe -Force -ErrorAction SilentlyContinue
-        throw "checksum mismatch for $asset (expected $expected, got $actual)"
-    }
-} elseif (-not $SkipVerify) {
+$expected = $ExpectedSha256.ToLowerInvariant()
+if ($actual -ne $expected) {
     Remove-Item -Path $exe -Force -ErrorAction SilentlyContinue
-    throw "could not verify ${asset}: no manifest hash and no -ExpectedSha256 (use -SkipVerify to bypass)"
+    throw "checksum mismatch for $asset (expected $expected, got $actual)"
 }
+$verified = $true
 
 if (Get-Command Unblock-File -ErrorAction SilentlyContinue) {
     Unblock-File -Path $exe -ErrorAction SilentlyContinue

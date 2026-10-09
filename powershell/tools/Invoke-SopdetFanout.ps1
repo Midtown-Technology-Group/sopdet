@@ -20,6 +20,9 @@
 .PARAMETER CollectorPath
   Path to Invoke-SopdetInventory.ps1. Defaults to the packaged collector.
 
+.PARAMETER ExpectedCollectorSha256
+  Required SHA-256 obtained from a trusted source separate from CollectorPath.
+
 .PARAMETER ConfigPath
   Optional inventory.config.json copied alongside the collector.
 
@@ -47,6 +50,7 @@
 
 .EXAMPLE
   .\Invoke-SopdetFanout.ps1 -TargetFile .\targets.txt -AuthorizationRef ENG-2026-014 `
+      -ExpectedCollectorSha256 <64-character-sha256> `
       -Credential (Get-Credential) -CollectorArgument "-Profile quick" -Confirm
 #>
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
@@ -55,6 +59,9 @@ param(
     [string]$TargetFile,
     [Parameter(Mandatory = $true)][string]$AuthorizationRef,
     [string]$CollectorPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'Invoke-SopdetInventory.ps1'),
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9A-Fa-f]{64}$')]
+    [string]$ExpectedCollectorSha256,
     [string]$ConfigPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'inventory.config.json'),
     [System.Management.Automation.PSCredential]$Credential,
     [ValidateSet('WinRM', 'SMB')][string]$Transport = 'WinRM',
@@ -193,6 +200,9 @@ if (-not (Test-Path $CollectorPath)) {
     throw "Collector not found at $CollectorPath."
 }
 $collectorHash = (Get-FileHash -Path $CollectorPath -Algorithm SHA256).Hash.ToLower()
+if ($collectorHash -ne $ExpectedCollectorSha256.ToLowerInvariant()) {
+    throw "Collector SHA-256 does not match the trusted pin."
+}
 
 $computers = @()
 if ($Target) { $computers += $Target }

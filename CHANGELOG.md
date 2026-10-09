@@ -5,6 +5,12 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+### Security
+
+- Windows bootstrap and fleet fanout require an out-of-band SHA-256 pin before
+  executing or copying an artifact. Same-channel manifests and the bootstrap
+  verification bypass are no longer trusted for publisher authentication.
+
 ### Changed
 
 - Ingest, enrollment, and device credentials are accepted through environment

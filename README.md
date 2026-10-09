@@ -219,23 +219,25 @@ additionally need the supplemental policy in [docs/appcontrol.md](docs/appcontro
 ### Deploy on Windows
 
 `scripts/Deploy-Sopdet.ps1` is the NinjaOne-deployable installer. It downloads
-from the GitHub release, verifies the SHA-256 against `MANIFEST.sha256`, clears
-the mark-of-the-web, then reports the version, runs a one-shot scan, or starts
-serve mode:
+from the GitHub release, verifies the SHA-256 against an operator-supplied pin
+obtained through a separate trusted channel, clears the mark-of-the-web, then
+reports the version, runs a one-shot scan, or starts serve mode:
 
 ```powershell
 # verify + report only
-./scripts/Deploy-Sopdet.ps1 -DownloadOnly
+./scripts/Deploy-Sopdet.ps1 -ExpectedSha256 <64-character-sha256> -DownloadOnly
 # one-shot scan
-./scripts/Deploy-Sopdet.ps1 -Endpoint <bifrost-endpoint> -Profile quick -Compress
+./scripts/Deploy-Sopdet.ps1 -ExpectedSha256 <64-character-sha256> -Endpoint <bifrost-endpoint> -Profile quick -Compress
 # resident serve mode
-./scripts/Deploy-Sopdet.ps1 -Serve -BifrostUrl https://bifrost.example.com
+./scripts/Deploy-Sopdet.ps1 -ExpectedSha256 <64-character-sha256> -Serve -BifrostUrl https://bifrost.example.com
 ```
 
 Inject secrets through `SOPDET_API_KEY`, `SOPDET_ENROLLMENT_TOKEN`, and
 `SOPDET_DEVICE_KEY` in the deployment environment. The wrapper passes them
-through to the collector without command-line arguments. Point at another build with `-Url` /
-`-ManifestUrl`, or supply `-ExpectedSha256` directly.
+through to the collector without command-line arguments. Point at another build
+with `-Url` and supply its `-ExpectedSha256` pin. The pin is mandatory because a
+manifest downloaded from the same release channel cannot authenticate the
+publisher.
 
 ```sh
 make sign-public      # Windows signing host -> dist/signed-public

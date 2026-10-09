@@ -98,6 +98,10 @@ To sign the collector and refresh the manifest with your code-signing cert:
 .\tools\New-SignedPackage.ps1 -CertificateThumbprint <THUMBPRINT>
 ```
 
+Fleet fanout also requires the collector's SHA-256 from a separate trusted
+channel. Pass it as `-ExpectedCollectorSha256`; the script refuses to contact
+any target when the local collector does not match the pin.
+
 ## Privacy and scope
 
 The payload contains device and user identifiers, installed software, network
