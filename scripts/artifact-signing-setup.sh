@@ -15,10 +15,13 @@
 #   westeurope westus westus2 westus3
 set -euo pipefail
 
-RG="${RG:-rg-sopdet-signing}"
+RG="${RG:-}"
 LOC="${LOC:-eastus}"
-ACCOUNT="${ACCOUNT:-mtg-sopdet-signing}"
+ACCOUNT="${ACCOUNT:-}"
 SUBSCRIPTION="${SUBSCRIPTION:-}"
+
+: "${RG:?set RG to the approved Artifact Signing resource-group name}"
+: "${ACCOUNT:?set ACCOUNT to the approved Artifact Signing account name}"
 
 az_args=()
 if [ -n "$SUBSCRIPTION" ]; then

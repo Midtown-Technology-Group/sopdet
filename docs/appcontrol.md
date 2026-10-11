@@ -5,10 +5,12 @@ Hardened Windows endpoints commonly enforce **App Control for Business**
 policy — Sopdet included. Signing is necessary but not always sufficient: the
 active policy must also **trust the signer**.
 
-Observed on a hardened test endpoint (`LT002`): 10 active App Control policies
-managed by **Microsoft** (OS base + supplementals), **Intune**, and **Huntress**.
-`Win32_DeviceGuard.CodeIntegrityPolicyEnforcementStatus` reported enforced, and
-an unsigned `sopdet.exe` was denied at launch.
+On a representative synthetic lab fixture, multiple active base and
+supplemental policies reported enforced through
+`Win32_DeviceGuard.CodeIntegrityPolicyEnforcementStatus`, and an unsigned
+`sopdet.exe` was denied at launch. Keep real endpoint names, customer numbers,
+policy identifiers, and device-group membership in the management system, not
+this runbook.
 
 ## What is required
 
@@ -34,9 +36,10 @@ enforce App Control.
 On a Windows machine with the ConfigCI tooling and the signed binaries:
 
 ```powershell
+$BasePolicyId = Read-Host 'Base policy GUID from the approved deployment record'
 ./scripts/New-AppControlPolicy.ps1 `
     -SignedPath dist/signed-private `
-    -BasePolicyId '{1283AC0F-FFF1-49AE-ADA1-8A933130CAD6}' `
+    -BasePolicyId $BasePolicyId `
     -OutFile sopdet-supplemental.xml
 ```
 
@@ -55,7 +58,7 @@ base policy via `SupplementsBasePolicyID`.
 
 - Publish every Sopdet update through the same signing identity, or its hash
   changes and the fallback hash rule will not match.
-- If Huntress also governs application control, add the MTG publisher there too
-  (or open a Huntress support request).
+- If third-party security tooling also governs application control, add the MTG
+  publisher there through that product's approved change process.
 - After deploying, confirm with `Get-WinEvent -LogName Microsoft-Windows-CodeIntegrity/Operational`
   and re-run `sopdet.exe` on the endpoint.
