@@ -78,7 +78,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: sonar-coverage-windows
-          path: coverage-windows.out
+          path: coverage-windows*.out
           if-no-files-found: error
       - name: Upload envelopes on failure
         if: failure()
@@ -120,7 +120,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: sonar-coverage-macos
-          path: coverage-macos.out
+          path: coverage-macos*.out
           if-no-files-found: error
 
   coverage:
