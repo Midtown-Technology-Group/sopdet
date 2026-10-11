@@ -339,11 +339,10 @@ func (winBiosCollector) Collect(_ context.Context, _ *Session) ([]schema.Record,
 		SMBIOSBIOSVersion  string
 		SerialNumber       string
 		ReleaseDate        time.Time
-		SystemSKUNumber    string
 		SMBIOSMajorVersion uint16
 		SMBIOSMinorVersion uint16
 	}
-	if err := wmi.Query("SELECT Manufacturer,Name,SMBIOSBIOSVersion,SerialNumber,ReleaseDate,SystemSKUNumber,SMBIOSMajorVersion,SMBIOSMinorVersion FROM Win32_BIOS", &bios); err != nil {
+	if err := wmi.Query("SELECT Manufacturer,Name,SMBIOSBIOSVersion,SerialNumber,ReleaseDate,SMBIOSMajorVersion,SMBIOSMinorVersion FROM Win32_BIOS", &bios); err != nil {
 		queryErrors = append(queryErrors, fmt.Errorf("query BIOS details: %w", err))
 	} else if len(bios) > 0 {
 		b := bios[0]
@@ -352,7 +351,6 @@ func (winBiosCollector) Collect(_ context.Context, _ *Session) ([]schema.Record,
 		rec["version"] = b.SMBIOSBIOSVersion
 		rec["bios_serial"] = b.SerialNumber
 		rec["system_serial"] = b.SerialNumber
-		rec["sku_number"] = b.SystemSKUNumber
 		rec["release_date"] = b.ReleaseDate
 		rec["smbios_major"] = b.SMBIOSMajorVersion
 		rec["smbios_minor"] = b.SMBIOSMinorVersion
