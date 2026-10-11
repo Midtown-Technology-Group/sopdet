@@ -69,6 +69,9 @@ jobs:
           go build -cover -o sopdet-cover.exe ./cmd/sopdet
           $env:GOCOVERDIR = (Resolve-Path .coverage-windows).Path
           .\sopdet-cover.exe -profile full -dry-run -out coverage-windows.json
+      - name: convert native Go coverage
+        shell: cmd
+        run: |
           go tool covdata textfmt -i=.coverage-windows -o=coverage-windows.out
       - name: Upload native Go coverage
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
