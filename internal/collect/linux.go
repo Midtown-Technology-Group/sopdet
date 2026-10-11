@@ -6,7 +6,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/hex"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 
@@ -54,14 +58,29 @@ func readTrim(path string) string {
 	return strings.TrimSpace(string(data))
 }
 
+func readOptionalTrim(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
 type linuxBiosCollector struct{}
 
 func (linuxBiosCollector) Name() string { return "bios" }
 func (linuxBiosCollector) Level() int   { return levelQuick }
 func (linuxBiosCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
 	rec := schema.Record{"key": "bios", "source": "dmi"}
+	var readErrors []error
 	set := func(field, file string) {
-		if v := readTrim("/sys/class/dmi/id/" + file); v != "" {
+		v, err := readOptionalTrim("/sys/class/dmi/id/" + file)
+		if err != nil {
+			readErrors = append(readErrors, err)
+		} else if v != "" {
 			rec[field] = v
 		}
 	}
@@ -71,15 +90,15 @@ func (linuxBiosCollector) Collect(_ context.Context, _ *Session) ([]schema.Recor
 	set("release_date", "bios_date")
 	set("system_serial", "product_serial")
 	set("enclosure_serial", "chassis_serial")
-	rec["board_manufacturer"] = readTrim("/sys/class/dmi/id/board_vendor")
-	rec["board_product"] = readTrim("/sys/class/dmi/id/board_name")
-	rec["board_serial"] = readTrim("/sys/class/dmi/id/board_serial")
-	rec["sku_number"] = readTrim("/sys/class/dmi/id/product_sku")
-	rec["chassis_types"] = readTrim("/sys/class/dmi/id/chassis_type")
+	set("board_manufacturer", "board_vendor")
+	set("board_product", "board_name")
+	set("board_serial", "board_serial")
+	set("sku_number", "product_sku")
+	set("chassis_types", "chassis_type")
 	if len(rec) <= 2 {
-		return []schema.Record{}, nil
+		return []schema.Record{}, errors.Join(readErrors...)
 	}
-	return []schema.Record{rec}, nil
+	return []schema.Record{rec}, errors.Join(readErrors...)
 }
 
 type linuxVirtualizationCollector struct{}
@@ -87,11 +106,11 @@ type linuxVirtualizationCollector struct{}
 func (linuxVirtualizationCollector) Name() string { return "virtualization" }
 func (linuxVirtualizationCollector) Level() int   { return levelMinimal }
 func (linuxVirtualizationCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
-	vendor := readTrim("/sys/class/dmi/id/sys_vendor")
-	product := readTrim("/sys/class/dmi/id/product_name")
-	cpuinfo := readTrim("/proc/cpuinfo")
+	vendor, vendorErr := readOptionalTrim("/sys/class/dmi/id/sys_vendor")
+	product, productErr := readOptionalTrim("/sys/class/dmi/id/product_name")
+	cpuinfo, cpuErr := readOptionalTrim("/proc/cpuinfo")
 	vm := vmSystemFrom(vendor, product, strings.Contains(cpuinfo, "hypervisor"))
-	return []schema.Record{{"key": "virtualization", "vm_system": vm, "physical": vm == "Physical"}}, nil
+	return []schema.Record{{"key": "virtualization", "vm_system": vm, "physical": vm == "Physical"}}, errors.Join(vendorErr, productErr, cpuErr)
 }
 
 type linuxSecureBootCollector struct{}
@@ -100,8 +119,14 @@ func (linuxSecureBootCollector) Name() string { return "secureboot" }
 func (linuxSecureBootCollector) Level() int   { return levelMinimal }
 func (linuxSecureBootCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
 	data, err := os.ReadFile("/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c")
-	if err != nil || len(data) < 5 {
+	if errors.Is(err, fs.ErrNotExist) {
 		return []schema.Record{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read Secure Boot EFI variable: %w", err)
+	}
+	if len(data) < 5 {
+		return nil, fmt.Errorf("parse Secure Boot EFI variable: got %d bytes", len(data))
 	}
 	value := int(data[len(data)-1])
 	return []schema.Record{{"key": "secureboot", "secure_boot": value, "source": "efivar"}}, nil
@@ -112,12 +137,12 @@ type linuxTPMCollector struct{}
 func (linuxTPMCollector) Name() string { return "tpm" }
 func (linuxTPMCollector) Level() int   { return levelQuick }
 func (linuxTPMCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
-	desc := readTrim("/sys/class/tpm/tpm0/device/description")
-	version := readTrim("/sys/class/tpm/tpm0/tpm_version_major")
+	desc, descErr := readOptionalTrim("/sys/class/tpm/tpm0/device/description")
+	version, versionErr := readOptionalTrim("/sys/class/tpm/tpm0/tpm_version_major")
 	if desc == "" && version == "" {
-		return []schema.Record{}, nil
+		return []schema.Record{}, errors.Join(descErr, versionErr)
 	}
-	return []schema.Record{{"key": "tpm", "present": true, "manufacturer_version": desc, "spec_version": version, "source": "sysfs"}}, nil
+	return []schema.Record{{"key": "tpm", "present": true, "manufacturer_version": desc, "spec_version": version, "source": "sysfs"}}, errors.Join(descErr, versionErr)
 }
 
 type linuxLocalUserCollector struct{}
@@ -162,6 +187,7 @@ func (linuxListeningPortCollector) Name() string { return "listening_ports" }
 func (linuxListeningPortCollector) Level() int   { return levelFull }
 func (linuxListeningPortCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
 	out := []schema.Record{}
+	var readErrors []error
 	files := []struct {
 		path string
 		kind string
@@ -174,6 +200,9 @@ func (linuxListeningPortCollector) Collect(_ context.Context, _ *Session) ([]sch
 	for _, file := range files {
 		f, err := os.Open(file.path)
 		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				readErrors = append(readErrors, fmt.Errorf("read %s: %w", file.path, err))
+			}
 			continue
 		}
 		sc := bufio.NewScanner(f)
@@ -213,9 +242,14 @@ func (linuxListeningPortCollector) Collect(_ context.Context, _ *Session) ([]sch
 				"protocol": proto, "address": resolved, "port": port, "family": file.kind, "process": nil,
 			})
 		}
-		f.Close()
+		if err := sc.Err(); err != nil {
+			readErrors = append(readErrors, fmt.Errorf("scan %s: %w", file.path, err))
+		}
+		if err := f.Close(); err != nil {
+			readErrors = append(readErrors, fmt.Errorf("close %s: %w", file.path, err))
+		}
 	}
-	return out, nil
+	return out, errors.Join(readErrors...)
 }
 
 type linuxSoftwareCollector struct{}
@@ -223,19 +257,29 @@ type linuxSoftwareCollector struct{}
 func (linuxSoftwareCollector) Name() string { return "software" }
 func (linuxSoftwareCollector) Level() int   { return levelQuick }
 func (linuxSoftwareCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
-	if recs, err := collectDpkg(); err == nil && len(recs) > 0 {
-		return recs, nil
+	return collectLinuxSoftware([]softwareSource{{"dpkg", collectDpkg}, {"rpm", collectRPM}, {"pacman", collectPacman}, {"apk", collectApk}})
+}
+
+type softwareSource struct {
+	name    string
+	collect func() ([]schema.Record, error)
+}
+
+func collectLinuxSoftware(sources []softwareSource) ([]schema.Record, error) {
+	var sourceErrors []error
+	for _, source := range sources {
+		recs, err := source.collect()
+		if err == nil {
+			if len(recs) > 0 {
+				return recs, nil
+			}
+			continue
+		}
+		if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, exec.ErrNotFound) {
+			sourceErrors = append(sourceErrors, fmt.Errorf("%s inventory: %w", source.name, err))
+		}
 	}
-	if recs, err := collectRPM(); err == nil && len(recs) > 0 {
-		return recs, nil
-	}
-	if recs, err := collectPacman(); err == nil && len(recs) > 0 {
-		return recs, nil
-	}
-	if recs, err := collectApk(); err == nil && len(recs) > 0 {
-		return recs, nil
-	}
-	return []schema.Record{}, nil
+	return []schema.Record{}, errors.Join(sourceErrors...)
 }
 
 func collectDpkg() ([]schema.Record, error) {
@@ -297,8 +341,14 @@ func collectPacman() ([]schema.Record, error) {
 		return nil, err
 	}
 	recs := []schema.Record{}
+	var readErrors []error
 	for _, e := range entries {
-		desc := readTrim("/var/lib/pacman/local/" + e.Name() + "/desc")
+		path := "/var/lib/pacman/local/" + e.Name() + "/desc"
+		desc, err := readOptionalTrim(path)
+		if err != nil {
+			readErrors = append(readErrors, err)
+			continue
+		}
 		if desc == "" {
 			continue
 		}
@@ -319,7 +369,7 @@ func collectPacman() ([]schema.Record, error) {
 			})
 		}
 	}
-	return recs, nil
+	return recs, errors.Join(readErrors...)
 }
 
 func collectApk() ([]schema.Record, error) {

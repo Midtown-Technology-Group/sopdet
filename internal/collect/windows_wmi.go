@@ -5,6 +5,8 @@ package collect
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"math"
 	"os/exec"
 	"strconv"
@@ -160,7 +162,9 @@ func (winHardwareCollector) Collect(_ context.Context, _ *Session) ([]schema.Rec
 		Product      string
 		SerialNumber string
 	}
-	if err := wmi.Query("SELECT Manufacturer,Product,SerialNumber FROM Win32_BaseBoard", &bb); err == nil && len(bb) > 0 {
+	if err := wmi.Query("SELECT Manufacturer,Product,SerialNumber FROM Win32_BaseBoard", &bb); err != nil {
+		return []schema.Record{rec}, fmt.Errorf("query baseboard details: %w", err)
+	} else if len(bb) > 0 {
 		rec["board_manufacturer"] = bb[0].Manufacturer
 		rec["board_product"] = bb[0].Product
 		rec["board_serial"] = bb[0].SerialNumber
@@ -194,11 +198,19 @@ func (winSecureBootCollector) Name() string { return "secureboot" }
 func (winSecureBootCollector) Level() int   { return levelMinimal }
 func (winSecureBootCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
 	var value *uint64
-	if k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Control\SecureBoot\State`, registry.QUERY_VALUE); err == nil {
-		defer k.Close()
-		if v, _, err := k.GetIntegerValue("UEFISecureBootEnabled"); err == nil {
-			value = &v
-		}
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Control\SecureBoot\State`, registry.QUERY_VALUE)
+	if errors.Is(err, registry.ErrNotExist) {
+		return []schema.Record{{"key": "secureboot", "secure_boot": value, "source": "registry"}}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open Secure Boot registry state: %w", err)
+	}
+	defer k.Close()
+	v, _, err := k.GetIntegerValue("UEFISecureBootEnabled")
+	if err == nil {
+		value = &v
+	} else if !errors.Is(err, registry.ErrNotExist) {
+		return nil, fmt.Errorf("read Secure Boot registry state: %w", err)
 	}
 	return []schema.Record{{"key": "secureboot", "secure_boot": value, "source": "registry"}}, nil
 }
@@ -320,6 +332,7 @@ func (winBiosCollector) Name() string { return "bios" }
 func (winBiosCollector) Level() int   { return levelQuick }
 func (winBiosCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
 	rec := schema.Record{"key": "bios"}
+	var queryErrors []error
 	var bios []struct {
 		Manufacturer       string
 		Name               string
@@ -330,7 +343,9 @@ func (winBiosCollector) Collect(_ context.Context, _ *Session) ([]schema.Record,
 		SMBIOSMajorVersion uint16
 		SMBIOSMinorVersion uint16
 	}
-	if err := wmi.Query("SELECT Manufacturer,Name,SMBIOSBIOSVersion,SerialNumber,ReleaseDate,SystemSKUNumber,SMBIOSMajorVersion,SMBIOSMinorVersion FROM Win32_BIOS", &bios); err == nil && len(bios) > 0 {
+	if err := wmi.Query("SELECT Manufacturer,Name,SMBIOSBIOSVersion,SerialNumber,ReleaseDate,SystemSKUNumber,SMBIOSMajorVersion,SMBIOSMinorVersion FROM Win32_BIOS", &bios); err != nil {
+		queryErrors = append(queryErrors, fmt.Errorf("query BIOS details: %w", err))
+	} else if len(bios) > 0 {
 		b := bios[0]
 		rec["manufacturer"] = b.Manufacturer
 		rec["name"] = b.Name
@@ -347,7 +362,9 @@ func (winBiosCollector) Collect(_ context.Context, _ *Session) ([]schema.Record,
 		SerialNumber   string
 		ChassisTypes   []int32
 	}
-	if err := wmi.Query("SELECT SMBIOSAssetTag,SerialNumber,ChassisTypes FROM Win32_SystemEnclosure", &enc); err == nil && len(enc) > 0 {
+	if err := wmi.Query("SELECT SMBIOSAssetTag,SerialNumber,ChassisTypes FROM Win32_SystemEnclosure", &enc); err != nil {
+		queryErrors = append(queryErrors, fmt.Errorf("query enclosure details: %w", err))
+	} else if len(enc) > 0 {
 		rec["asset_tag"] = enc[0].SMBIOSAssetTag
 		rec["enclosure_serial"] = enc[0].SerialNumber
 		chassis := make([]string, 0, len(enc[0].ChassisTypes))
@@ -356,7 +373,7 @@ func (winBiosCollector) Collect(_ context.Context, _ *Session) ([]schema.Record,
 		}
 		rec["chassis_types"] = strings.Join(chassis, ",")
 	}
-	return []schema.Record{rec}, nil
+	return []schema.Record{rec}, errors.Join(queryErrors...)
 }
 
 type winTPMCollector struct{}
@@ -532,18 +549,20 @@ func (winAntivirusCollector) Collect(ctx context.Context, _ *Session) ([]schema.
 			"product_exe": r.PathToSignedProductExe,
 		})
 	}
-	out = enrichDefenderStatus(ctx, out)
-	return out, nil
+	return enrichDefenderStatus(ctx, out)
 }
 
 // enrichDefenderStatus mirrors the PowerShell collector: Defender records
 // gain live version/signature fields, and a Server SKU with no
 // SecurityCenter2 namespace gets a synthetic windows-defender record.
-func enrichDefenderStatus(ctx context.Context, out []schema.Record) []schema.Record {
+func enrichDefenderStatus(ctx context.Context, out []schema.Record) ([]schema.Record, error) {
 	script := "Get-MpComputerStatus -ErrorAction Stop | Select-Object AntivirusEnabled,AntivirusSignatureAge,AMProductVersion,AntivirusSignatureVersion | ConvertTo-Json -Compress -Depth 2"
 	raw, err := assessCombined(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
-	if err != nil || strings.TrimSpace(raw) == "" {
-		return out
+	if err != nil {
+		return out, fmt.Errorf("query Defender status: %w: %s", err, strings.TrimSpace(raw))
+	}
+	if strings.TrimSpace(raw) == "" {
+		return out, fmt.Errorf("query Defender status: empty output")
 	}
 	var d struct {
 		AntivirusEnabled          bool
@@ -552,7 +571,7 @@ func enrichDefenderStatus(ctx context.Context, out []schema.Record) []schema.Rec
 		AntivirusSignatureVersion string
 	}
 	if err := json.Unmarshal([]byte(raw), &d); err != nil {
-		return out
+		return out, fmt.Errorf("parse Defender status: %w", err)
 	}
 	upToDate := true
 	if d.AntivirusSignatureAge != nil {
@@ -578,7 +597,7 @@ func enrichDefenderStatus(ctx context.Context, out []schema.Record) []schema.Rec
 			"expiration": nil, "instance_guid": nil, "product_exe": nil,
 		})
 	}
-	return out
+	return out, nil
 }
 
 type winServiceCollector struct{}
@@ -804,26 +823,36 @@ func (winFirewallCollector) Collect(_ context.Context, _ *Session) ([]schema.Rec
 		{"PublicProfile", "Public"},
 	}
 	out := []schema.Record{}
+	var readErrors []error
 	for _, p := range profiles {
 		path := `SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\` + p.key
 		k, err := registry.OpenKey(registry.LOCAL_MACHINE, path, registry.QUERY_VALUE|registry.WOW64_64KEY)
 		if err != nil {
+			if !errors.Is(err, registry.ErrNotExist) {
+				readErrors = append(readErrors, fmt.Errorf("open %s firewall profile: %w", p.name, err))
+			}
 			continue
 		}
 		rec := schema.Record{"key": "firewall:" + p.name, "profile": p.name}
 		if v, _, err := k.GetIntegerValue("EnableFirewall"); err == nil {
 			rec["enabled"] = v == 1
+		} else if !errors.Is(err, registry.ErrNotExist) {
+			readErrors = append(readErrors, fmt.Errorf("read %s firewall enabled state: %w", p.name, err))
 		}
 		if v, _, err := k.GetIntegerValue("DefaultInboundAction"); err == nil {
 			rec["default_inbound"] = allowBlock(v, true)
+		} else if !errors.Is(err, registry.ErrNotExist) {
+			readErrors = append(readErrors, fmt.Errorf("read %s firewall inbound policy: %w", p.name, err))
 		}
 		if v, _, err := k.GetIntegerValue("DefaultOutboundAction"); err == nil {
 			rec["default_outbound"] = allowBlock(v, false)
+		} else if !errors.Is(err, registry.ErrNotExist) {
+			readErrors = append(readErrors, fmt.Errorf("read %s firewall outbound policy: %w", p.name, err))
 		}
 		k.Close()
 		out = append(out, rec)
 	}
-	return out, nil
+	return out, errors.Join(readErrors...)
 }
 
 func allowBlock(v uint64, inbound bool) string {
@@ -911,12 +940,16 @@ type winAppxCollector struct{}
 
 func (winAppxCollector) Name() string { return "appx_packages" }
 func (winAppxCollector) Level() int   { return levelFull }
-func (winAppxCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
-	script := "Get-AppxPackage -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ Name=$_.Name; Version=[string]$_.Version; Publisher=$_.Publisher; PackageFullName=$_.PackageFullName; InstallLocation=$_.InstallLocation } } | ConvertTo-Json -Compress -Depth 4"
-	output, err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script).Output()
-	if err != nil || len(output) == 0 {
+func (winAppxCollector) Collect(ctx context.Context, _ *Session) ([]schema.Record, error) {
+	script := "Get-AppxPackage -ErrorAction Stop | ForEach-Object { [pscustomobject]@{ Name=$_.Name; Version=[string]$_.Version; Publisher=$_.Publisher; PackageFullName=$_.PackageFullName; InstallLocation=$_.InstallLocation } } | ConvertTo-Json -Compress -Depth 4"
+	raw, err := assessCombined(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	if err != nil {
+		return nil, fmt.Errorf("query AppX packages: %w: %s", err, strings.TrimSpace(raw))
+	}
+	if strings.TrimSpace(raw) == "" {
 		return []schema.Record{}, nil
 	}
+	output := []byte(raw)
 	type appx struct {
 		Name            string
 		Version         string
@@ -928,7 +961,7 @@ func (winAppxCollector) Collect(_ context.Context, _ *Session) ([]schema.Record,
 	if err := json.Unmarshal(output, &rows); err != nil {
 		var single appx
 		if err2 := json.Unmarshal(output, &single); err2 != nil {
-			return []schema.Record{}, nil
+			return nil, fmt.Errorf("parse AppX package output: %w", errors.Join(err, err2))
 		}
 		rows = []appx{single}
 	}
@@ -992,10 +1025,13 @@ func (winVolumesCollector) Collect(_ context.Context, _ *Session) ([]schema.Reco
 	}
 	encByLetter := map[string]enc{}
 	var encs []enc
+	var encryptionError error
 	if err := wmi.QueryNamespace("SELECT DriveLetter,ProtectionStatus,EncryptionMethod,ConversionStatus FROM Win32_EncryptableVolume", &encs, "root\\cimv2\\security\\microsoftvolumeencryption"); err == nil {
 		for _, e := range encs {
 			encByLetter[strings.TrimRight(e.DriveLetter, ":")] = e
 		}
+	} else if !strings.Contains(strings.ToLower(err.Error()), "invalid namespace") {
+		encryptionError = fmt.Errorf("query BitLocker details: %w", err)
 	}
 	out := make([]schema.Record, 0, len(disks))
 	for _, d := range disks {
@@ -1027,7 +1063,7 @@ func (winVolumesCollector) Collect(_ context.Context, _ *Session) ([]schema.Reco
 		}
 		out = append(out, rec)
 	}
-	return out, nil
+	return out, encryptionError
 }
 
 func decodeU16(v []uint16) string {
@@ -1079,12 +1115,16 @@ type winThreatCollector struct{}
 
 func (winThreatCollector) Name() string { return "antivirus_threats" }
 func (winThreatCollector) Level() int   { return levelQuick }
-func (winThreatCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
-	script := "Get-MpThreatDetection -ErrorAction SilentlyContinue | Select-Object -First 200 | ForEach-Object { [pscustomobject]@{ ThreatID=$_.ThreatID; DetectedAt=[string]$_.InitialDetectionTime; Resources=($_.Resources -join ';') } } | ConvertTo-Json -Compress -Depth 3"
-	output, err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script).Output()
-	if err != nil || len(output) == 0 {
+func (winThreatCollector) Collect(ctx context.Context, _ *Session) ([]schema.Record, error) {
+	script := "Get-MpThreatDetection -ErrorAction Stop | Select-Object -First 200 | ForEach-Object { [pscustomobject]@{ ThreatID=$_.ThreatID; DetectedAt=[string]$_.InitialDetectionTime; Resources=($_.Resources -join ';') } } | ConvertTo-Json -Compress -Depth 3"
+	raw, err := assessCombined(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	if err != nil {
+		return nil, fmt.Errorf("query Defender threats: %w: %s", err, strings.TrimSpace(raw))
+	}
+	if strings.TrimSpace(raw) == "" {
 		return []schema.Record{}, nil
 	}
+	output := []byte(raw)
 	type threat struct {
 		ThreatID   int64
 		DetectedAt string
@@ -1093,8 +1133,8 @@ func (winThreatCollector) Collect(_ context.Context, _ *Session) ([]schema.Recor
 	var rows []threat
 	if err := json.Unmarshal(output, &rows); err != nil {
 		var single threat
-		if json.Unmarshal(output, &single) != nil {
-			return []schema.Record{}, nil
+		if err2 := json.Unmarshal(output, &single); err2 != nil {
+			return nil, fmt.Errorf("parse Defender threat output: %w", errors.Join(err, err2))
 		}
 		rows = []threat{single}
 	}
