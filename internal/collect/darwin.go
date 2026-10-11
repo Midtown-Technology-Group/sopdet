@@ -17,6 +17,7 @@ import (
 )
 
 var errNoProfilerData = errors.New("system_profiler returned no data")
+var collectorRunCommand = runCommand
 
 // PlatformIdentity reads the hardware UUID from ioreg on macOS.
 func PlatformIdentity() (machineGUID, hardwareUUID *string, elevated bool) {
@@ -56,7 +57,7 @@ func PlatformCollectors(_ *Session) []Collector {
 }
 
 func systemProfiler(dataType string) ([]map[string]any, error) {
-	out, err := runCommand("system_profiler", "-json", dataType)
+	out, err := collectorRunCommand("system_profiler", "-json", dataType)
 	if err != nil {
 		return nil, err
 	}
@@ -258,7 +259,7 @@ func (macLocalUserCollector) Name() string { return "local_users" }
 func (macLocalUserCollector) Level() int   { return levelQuick }
 func (macLocalUserCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
 	out := []schema.Record{}
-	raw, directoryErr := runCommand("dscl", ".", "-list", "/Users", "UniqueID")
+	raw, directoryErr := collectorRunCommand("dscl", ".", "-list", "/Users", "UniqueID")
 	if directoryErr == nil {
 		for _, line := range strings.Split(raw, "\n") {
 			fields := strings.Fields(line)
@@ -300,7 +301,7 @@ type macListeningPortCollector struct{}
 func (macListeningPortCollector) Name() string { return "listening_ports" }
 func (macListeningPortCollector) Level() int   { return levelFull }
 func (macListeningPortCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
-	raw, err := runCommand("lsof", "-nP", "-iTCP", "-sTCP:LISTEN")
+	raw, err := collectorRunCommand("lsof", "-nP", "-iTCP", "-sTCP:LISTEN")
 	if err != nil {
 		return nil, fmt.Errorf("list listening ports: %w", err)
 	}

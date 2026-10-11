@@ -65,6 +65,7 @@ jobs:
       - name: collect native Go coverage
         shell: pwsh
         run: |
+          go test -coverprofile=coverage-windows-unit.out ./...
           New-Item -ItemType Directory -Force .coverage-windows | Out-Null
           go build -cover -o sopdet-cover.exe ./cmd/sopdet
           $env:GOCOVERDIR = (Resolve-Path .coverage-windows).Path
@@ -110,6 +111,7 @@ jobs:
           PY
       - name: collect native Go coverage
         run: |
+          go test -coverprofile=coverage-macos-unit.out ./...
           mkdir .coverage-macos
           go build -cover -o sopdet-cover ./cmd/sopdet
           GOCOVERDIR="$PWD/.coverage-macos" ./sopdet-cover -profile full -dry-run -out coverage-macos.json
