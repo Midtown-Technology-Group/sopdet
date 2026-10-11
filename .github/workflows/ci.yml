@@ -62,10 +62,12 @@ jobs:
         run: go vet ./...
       - name: equivalence (Go vs PowerShell envelopes)
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-equivalence.ps1
-      - name: collect native Go coverage
+      - name: collect native collector unit coverage
+        shell: pwsh
+        run: go test -coverprofile coverage-windows-unit.out ./internal/collect
+      - name: collect native integration coverage
         shell: pwsh
         run: |
-          go test -coverprofile=coverage-windows-unit.out ./...
           New-Item -ItemType Directory -Force .coverage-windows | Out-Null
           go build -cover -o sopdet-cover.exe ./cmd/sopdet
           $env:GOCOVERDIR = (Resolve-Path .coverage-windows).Path
@@ -109,9 +111,10 @@ jobs:
           print("macOS entities:", len(d["entities"]), sorted(d["entities"].keys()))
           print("entity_errors:", list(d.get("entity_errors", {}).keys()))
           PY
-      - name: collect native Go coverage
+      - name: collect native collector unit coverage
+        run: go test -coverprofile coverage-macos-unit.out ./internal/collect
+      - name: collect native integration coverage
         run: |
-          go test -coverprofile=coverage-macos-unit.out ./...
           mkdir .coverage-macos
           go build -cover -o sopdet-cover ./cmd/sopdet
           GOCOVERDIR="$PWD/.coverage-macos" ./sopdet-cover -profile full -dry-run -out coverage-macos.json
