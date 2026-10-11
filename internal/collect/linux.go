@@ -266,6 +266,7 @@ type softwareSource struct {
 }
 
 func collectLinuxSoftware(sources []softwareSource) ([]schema.Record, error) {
+	var partial []schema.Record
 	var sourceErrors []error
 	for _, source := range sources {
 		recs, err := source.collect()
@@ -276,10 +277,11 @@ func collectLinuxSoftware(sources []softwareSource) ([]schema.Record, error) {
 			continue
 		}
 		if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, exec.ErrNotFound) {
+			partial = append(partial, recs...)
 			sourceErrors = append(sourceErrors, fmt.Errorf("%s inventory: %w", source.name, err))
 		}
 	}
-	return []schema.Record{}, errors.Join(sourceErrors...)
+	return partial, errors.Join(sourceErrors...)
 }
 
 func collectDpkg() ([]schema.Record, error) {

@@ -14,11 +14,12 @@ import (
 
 func TestCollectLinuxSoftwareSurfacesOperationalSourceError(t *testing.T) {
 	denied := errors.New("permission denied")
+	partial := []schema.Record{{"key": "partial|1"}}
 	records, err := collectLinuxSoftware([]softwareSource{
 		{"missing", func() ([]schema.Record, error) { return nil, os.ErrNotExist }},
-		{"blocked", func() ([]schema.Record, error) { return nil, denied }},
+		{"blocked", func() ([]schema.Record, error) { return partial, denied }},
 	})
-	if len(records) != 0 || !errors.Is(err, denied) || !strings.Contains(err.Error(), "blocked inventory") {
+	if len(records) != 1 || records[0]["key"] != "partial|1" || !errors.Is(err, denied) || !strings.Contains(err.Error(), "blocked inventory") {
 		t.Fatalf("operational source error was suppressed: records=%v err=%v", records, err)
 	}
 }
