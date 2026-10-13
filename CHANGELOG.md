@@ -11,6 +11,11 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
   synthetic lab language instead of tracked cloud, operator, endpoint, or
   customer identifiers.
 
+- Platform collectors now surface access, execution, parse, and file failures
+  through `entity_errors` instead of reporting a clean empty result. When a
+  secondary source fails after records were collected, the records and error
+  are both retained so partial posture evidence is explicit.
+
 - Fleet fanout accepts only a validated collection profile and passes it as a
   typed argument to the remote collector. SMB/schtasks deployment, which put
   administrative passwords in process command lines, is removed; WinRM remains.
