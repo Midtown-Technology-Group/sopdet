@@ -31,6 +31,9 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ### Changed
 
+- Device job logs preserve UTF-8 character boundaries and budget the normalized
+  bytes actually sent, keeping multibyte output within the platform job cap.
+
 - Ingest, enrollment, and device credentials are accepted through environment
   variables or protected configuration instead of command-line flags. The
   deployment wrapper no longer copies those secrets into child arguments.

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // LogEntry is one fenced log chunk produced by a job run. Seq starts at 1
@@ -135,21 +136,30 @@ type outputBudget struct {
 	max       int64
 	observed  int64
 	truncated bool
+	exhausted bool
 }
 
-// take returns the allowed prefix of chunk and records consumption.
+// take returns a valid UTF-8 prefix within the remaining transmitted-byte cap.
 func (b *outputBudget) take(chunk []byte) []byte {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.observed >= b.max {
+	if len(chunk) == 0 {
+		return nil
+	}
+	if b.exhausted || b.observed >= b.max {
 		b.truncated = true
 		return nil
 	}
 	room := b.max - b.observed
 	if int64(len(chunk)) > room {
-		b.observed = b.max
+		prefixLen := int(room)
+		for prefixLen > 0 && !utf8.Valid(chunk[:prefixLen]) {
+			prefixLen--
+		}
+		b.observed += int64(prefixLen)
 		b.truncated = true
-		return chunk[:room]
+		b.exhausted = true
+		return chunk[:prefixLen]
 	}
 	b.observed += int64(len(chunk))
 	return chunk
@@ -170,12 +180,15 @@ type streamPump struct {
 
 	mu      sync.Mutex
 	pending []byte
+	carry   []byte
 }
 
 func (p *streamPump) add(chunk []byte) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	allowed := p.state.budget.take(chunk)
+	normalized, carry := normalizeUTF8Chunk(append(p.carry, chunk...), false)
+	p.carry = carry
+	allowed := p.state.budget.take(normalized)
 	if len(allowed) > 0 {
 		p.pending = append(p.pending, allowed...)
 	}
@@ -197,6 +210,39 @@ func (p *streamPump) flush() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.flushLocked()
+}
+
+func (p *streamPump) finish() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	normalized, _ := normalizeUTF8Chunk(p.carry, true)
+	p.carry = nil
+	if allowed := p.state.budget.take(normalized); len(allowed) > 0 {
+		p.pending = append(p.pending, allowed...)
+	}
+	p.flushLocked()
+}
+
+func normalizeUTF8Chunk(chunk []byte, final bool) ([]byte, []byte) {
+	normalized := make([]byte, 0, len(chunk))
+	for len(chunk) > 0 {
+		if !utf8.FullRune(chunk) {
+			if !final {
+				return normalized, append([]byte(nil), chunk...)
+			}
+			normalized = utf8.AppendRune(normalized, utf8.RuneError)
+			return normalized, nil
+		}
+		r, size := utf8.DecodeRune(chunk)
+		if r == utf8.RuneError && size == 1 {
+			normalized = utf8.AppendRune(normalized, utf8.RuneError)
+			chunk = chunk[1:]
+			continue
+		}
+		normalized = append(normalized, chunk[:size]...)
+		chunk = chunk[size:]
+	}
+	return normalized, nil
 }
 
 // ticker flushes partial buffers so silent-but-alive processes still emit
@@ -349,8 +395,8 @@ func (r *Runner) Run(
 	killTree(cmd)
 	waitPipes(&wg, grace, stdoutR, stderrR)
 	close(stop)
-	outPump.flush()
-	errPump.flush()
+	outPump.finish()
+	errPump.finish()
 
 	observed, truncated := state.budget.stats()
 	outcome := RunOutcome{
