@@ -85,24 +85,31 @@ then verifies with `signtool verify /pa`.
 
 ## CI signing identity (planned)
 
-For GitHub Actions, create a service principal and grant it only the signing
-role, scoped to the account:
+For GitHub Actions, use a dedicated service principal with reviewed OIDC
+federation already configured for the release workflow. Obtain its approved
+**service-principal object ID** from the Enterprise applications entry and
+confirm the tenant and identity against the protected deployment record.
+Keep that object ID and the exact signing-account scope in the protected
+workflow environment.
+
+Run the account-scoped role assignment through the reviewed Azure deployment
+workflow using the explicit object ID. This step does not create an identity or
+password credential, or select an identity by display name:
 
 ```sh
-: "${SIGNING_SERVICE_PRINCIPAL_NAME:?set the approved CI identity name}"
+: "${SIGNING_SERVICE_PRINCIPAL_OBJECT_ID:?set the approved CI service-principal object ID}"
 : "${SIGNING_ACCOUNT_SCOPE:?set the exact Artifact Signing account resource ID}"
-SIGNING_SERVICE_PRINCIPAL_ID="$(
-    az ad sp create-for-rbac -n "$SIGNING_SERVICE_PRINCIPAL_NAME" \
-        --skip-assignment --query appId -o tsv
-)"
-: "${SIGNING_SERVICE_PRINCIPAL_ID:?service-principal creation returned no appId}"
-az role assignment create --assignee "$SIGNING_SERVICE_PRINCIPAL_ID" \
+az role assignment create \
+    --assignee-object-id "$SIGNING_SERVICE_PRINCIPAL_OBJECT_ID" \
+    --assignee-principal-type ServicePrincipal \
     --role "Artifact Signing Certificate Profile Signer" \
     --scope "$SIGNING_ACCOUNT_SCOPE"
 ```
 
-Prefer federated credentials (OIDC) over a client secret for the release
-workflow.
+Identity provisioning and OIDC federation require their own approved deployment
+change before this assignment. Follow the [Azure RBAC service-principal
+guidance](https://learn.microsoft.com/en-us/azure/role-based-access-control/role-assignments-cli)
+for the object-ID and principal-type parameters.
 
 ## WDAC-enforced endpoints
 

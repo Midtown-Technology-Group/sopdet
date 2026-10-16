@@ -9,7 +9,8 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 - Signing and App Control runbooks use protected environment variables and
   synthetic lab language instead of tracked cloud, operator, endpoint, or
-  customer identifiers.
+  customer identifiers. CI signing role assignment uses an approved
+  service-principal object ID and creates no password credential.
 
 - Platform collectors now surface access, execution, parse, and file failures
   through `entity_errors` instead of reporting a clean empty result. When a
