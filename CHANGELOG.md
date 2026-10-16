@@ -7,6 +7,11 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ### Security
 
+- Signing and App Control runbooks use protected environment variables and
+  synthetic lab language instead of tracked cloud, operator, endpoint, or
+  customer identifiers. CI signing role assignment uses an approved
+  service-principal object ID and creates no password credential.
+
 - Platform collectors now surface access, execution, parse, and file failures
   through `entity_errors` instead of reporting a clean empty result. When a
   secondary source fails after records were collected, the records and error
@@ -146,11 +151,11 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
   tier to a stable `unsigned-latest` GitHub release, giving permanent
   `/releases/latest/download/<asset>` URLs (no SAS expiry). See the README
   "Download (unsigned)" section.
-- Provisioned Azure Artifact Signing: Basic-SKU account `mtg-sopdet-signing`
-  (`eastus`, endpoint `https://eus.codesigning.azure.net/`) in
-  `rg-sopdet-signing`, with the signed-in user granted the Artifact Signing
-  Identity Verifier role. Identity validation and certificate-profile creation
-  remain (portal). See [docs/signing.md](docs/signing.md).
+- Provisioned Azure Artifact Signing with a Basic-SKU account and a scoped
+  Artifact Signing Identity Verifier grant. Environment-specific resource names,
+  identities, and endpoints remain outside the repository. Identity validation
+  and certificate-profile creation remain portal steps. See
+  [docs/signing.md](docs/signing.md).
 - Progress and branding: every run now emits a shared event stream rendered by
   a branded terminal reporter (banner, live progress meter, per-collector lines,
   summary; plain-log fallback when not a TTY or with `-quiet`) and, with `-ui`,
