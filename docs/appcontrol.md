@@ -58,7 +58,8 @@ base policy via `SupplementsBasePolicyID`.
 
 - Publish every Sopdet update through the same signing identity, or its hash
   changes and the fallback hash rule will not match.
-- If third-party security tooling also governs application control, add the MTG
-  publisher there through that product's approved change process.
+- If Huntress also governs application control, add the MTG publisher there
+  through its approved change process, or open a Huntress support request when
+  the operator cannot add the publisher directly.
 - After deploying, confirm with `Get-WinEvent -LogName Microsoft-Windows-CodeIntegrity/Operational`
   and re-run `sopdet.exe` on the endpoint.

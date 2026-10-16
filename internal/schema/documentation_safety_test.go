@@ -12,7 +12,12 @@ func TestOperationalRunbooksContainNoConcreteIdentityValues(t *testing.T) {
 	paths := []string{"docs/signing.md", "docs/appcontrol.md"}
 	uuid := regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
 	email := regexp.MustCompile(`(?i)\b[[:alnum:]._%+-]+@[[:alnum:].-]+\.[a-z]{2,}\b`)
-	endpointID := regexp.MustCompile(`(?i)\b(?:device|client|endpoint)\s+[0-9]+(?:[/,][0-9]+)*\b|\b(?:lt|pc|ws)[0-9]{3,}\b`)
+	endpointID := regexp.MustCompile(`(?i)\b(?:device|client|endpoint)(?:\s+|-)[0-9]+(?:[/,][0-9]+)*\b|\b(?:lt|pc|ws)-?[0-9]{3,}\b`)
+	for _, example := range []string{"endpoint-1234", "LT-1234"} {
+		if !endpointID.MatchString(example) {
+			t.Errorf("endpoint pattern does not detect %q", example)
+		}
+	}
 	for _, relative := range paths {
 		data, err := os.ReadFile(filepath.Join(repositoryRoot, relative))
 		if err != nil {

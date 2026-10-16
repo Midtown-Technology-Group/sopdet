@@ -15,10 +15,23 @@ them. This is the provisioning state and the steps that remain.
 | Resource provider | `Microsoft.CodeSigning` — must be registered |
 | RBAC | Grant Artifact Signing Identity Verifier to the approved operator group, not a named person in this runbook |
 
-Supply those values through the protected operator environment or
-`scripts/artifact-signing.env` (gitignored). To provision or recreate the
-resources, run `bash scripts/artifact-signing-setup.sh` and retain its output in
-the approved secret/configuration system, not this repository.
+Supply those provisioning values through the protected operator environment.
+(`scripts/artifact-signing.env` is the separate gitignored configuration used
+later by the signing commands.) The setup script accepts `RG`, `ACCOUNT`, `LOC`,
+and `SUBSCRIPTION`; map the protected names explicitly before running it:
+
+```sh
+: "${SIGNING_RESOURCE_GROUP:?set the protected resource-group value}"
+: "${SIGNING_ACCOUNT:?set the protected account value}"
+export RG="$SIGNING_RESOURCE_GROUP"
+export ACCOUNT="$SIGNING_ACCOUNT"
+export LOC="${SIGNING_REGION:-eastus}"
+export SUBSCRIPTION="${SIGNING_SUBSCRIPTION_ID:-}"
+bash scripts/artifact-signing-setup.sh
+```
+
+Retain its output in the approved secret/configuration system, not this
+repository.
 
 ## Remaining steps
 
@@ -77,9 +90,12 @@ role, scoped to the account:
 
 ```sh
 : "${SIGNING_SERVICE_PRINCIPAL_NAME:?set the approved CI identity name}"
-: "${SIGNING_SERVICE_PRINCIPAL_ID:?set the approved CI application ID}"
 : "${SIGNING_ACCOUNT_SCOPE:?set the exact Artifact Signing account resource ID}"
-az ad sp create-for-rbac -n "$SIGNING_SERVICE_PRINCIPAL_NAME" --skip-assignment
+SIGNING_SERVICE_PRINCIPAL_ID="$(
+    az ad sp create-for-rbac -n "$SIGNING_SERVICE_PRINCIPAL_NAME" \
+        --skip-assignment --query appId -o tsv
+)"
+: "${SIGNING_SERVICE_PRINCIPAL_ID:?service-principal creation returned no appId}"
 az role assignment create --assignee "$SIGNING_SERVICE_PRINCIPAL_ID" \
     --role "Artifact Signing Certificate Profile Signer" \
     --scope "$SIGNING_ACCOUNT_SCOPE"
