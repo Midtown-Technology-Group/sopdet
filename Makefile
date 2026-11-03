@@ -87,3 +87,10 @@ publish-public: cross
 
 publish-private: sign-private
 	bash scripts/publish.sh private $(DIST)/signed-private
+
+.PHONY: secret-scan pre-push
+# Local authenticated gate; keep CI/check/test targets unchanged.
+secret-scan:
+	python3 scripts/secret_gate.py
+
+pre-push: secret-scan

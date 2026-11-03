@@ -5,6 +5,11 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+### Development
+
+- Add a fail-closed ggshield commit-history gate before local pushes and PRs.
+
+
 ### Security
 
 - Platform collectors now surface access, execution, parse, and file failures
