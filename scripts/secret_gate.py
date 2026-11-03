@@ -27,7 +27,7 @@ def executable(name):
         return None
     cwd = Path.cwd().resolve()
     root = next((p for p in (cwd, *cwd.parents) if (p / ".git").exists()), cwd)
-    os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
+    os.environ["NODEFAULTCURRENTDIRECTORYINEXEPATH"] = "1"
     directories = []
     for entry in os.get_exec_path():
         directory = Path(entry)
