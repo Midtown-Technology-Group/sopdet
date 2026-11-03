@@ -93,7 +93,8 @@ publish-private: sign-private
 secret-scan:
 	$(PYTHON) -I scripts/secret_gate.py
 
-pre-push: secret-scan
+pre-push:
+	$(PYTHON) -I scripts/secret_gate.py --pre-push
 
 # Override with PYTHON=python on native Windows.
 PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
