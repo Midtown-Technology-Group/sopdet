@@ -96,4 +96,4 @@ secret-scan:
 pre-push: secret-scan
 
 # Override with PYTHON=python on native Windows.
-PYTHON ?= python3
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
