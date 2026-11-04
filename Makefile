@@ -90,11 +90,23 @@ publish-private: sign-private
 
 .PHONY: secret-scan pre-push
 # Local authenticated gate; keep CI/check/test targets unchanged.
-secret-scan:
-	$(PYTHON) -I scripts/secret_gate.py
+secret-scan: secret-gate-python
+	"$(SECRET_GATE_PYTHON)" -I scripts/secret_gate.py
 
-pre-push:
-	$(PYTHON) -I scripts/secret_gate.py --pre-push
+pre-push: secret-gate-python
+	"$(SECRET_GATE_PYTHON)" -I scripts/secret_gate.py --pre-push
 
-# Override with PYTHON=python on native Windows.
+# Native Windows: set MTG_SECRET_GATE_PYTHON to an approved absolute interpreter.
 PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
+
+.PHONY: secret-gate-python
+ifeq ($(OS),Windows_NT)
+SECRET_GATE_PYTHON ?= $(MTG_SECRET_GATE_PYTHON)
+else
+SECRET_GATE_PYTHON ?= $(PYTHON)
+endif
+
+secret-gate-python:
+ifeq ($(OS),Windows_NT)
+	$(if $(or $(findstring :/,$(subst \,/,$(SECRET_GATE_PYTHON))),$(filter //%,$(subst \,/,$(SECRET_GATE_PYTHON)))),,$(error UNAVAILABLE: set MTG_SECRET_GATE_PYTHON to an approved absolute Python path outside all Git checkouts; publication blocked))
+endif
