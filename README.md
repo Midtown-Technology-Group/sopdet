@@ -61,6 +61,12 @@ make vet
 Flags override the config file; a missing `inventory.config.json` next to the
 binary is loaded automatically.
 
+A chunk counts as delivered only when the endpoint response reports workflow
+`status: "Success"`, so configure the ingest workflow for **sync** execution.
+Any other answer, such as `Failed`, `Timeout` or an async `Pending`, leaves the
+delta baseline unchanged so the next scan resends. The run then exits with
+code 3.
+
 | Flag | Meaning |
 |---|---|
 | `-config` | config file path |

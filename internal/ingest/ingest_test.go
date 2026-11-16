@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -120,7 +121,16 @@ func testEnvelope() *schema.Envelope {
 	}
 }
 
+const successReply = `{"execution_id":"00000000-0000-4000-8000-000000000001","status":"Success"}`
+
 func recorder(t *testing.T, failFirst int, status int) (*httptest.Server, *[]received, *int) {
+	t.Helper()
+	return recorderWith(t, failFirst, status, successReply)
+}
+
+// recorderWith answers non-failed requests with status and, for 2xx, the
+// given Bifrost endpoint response body.
+func recorderWith(t *testing.T, failFirst int, status int, reply string) (*httptest.Server, *[]received, *int) {
 	t.Helper()
 	var mu sync.Mutex
 	got := []received{}
@@ -148,6 +158,9 @@ func recorder(t *testing.T, failFirst int, status int) (*httptest.Server, *[]rec
 		}
 		got = append(got, received{payload: b.Payload, encoding: enc, chunkIdx: b.ChunkIndex, chunkCnt: b.ChunkCount, hasHeader: r.Header.Get("X-Bifrost-Key") != ""})
 		w.WriteHeader(status)
+		if status >= 200 && status < 300 && reply != "" {
+			_, _ = io.WriteString(w, reply)
+		}
 	}))
 	t.Cleanup(srv.Close)
 	return srv, &got, &calls
@@ -249,5 +262,96 @@ func TestSpoolScopeChangesWithCredentialAndImplementation(t *testing.T) {
 	}
 	if scopedSpoolDir(base, "https://other.invalid/ingest", "synthetic-key-a") == a {
 		t.Fatal("spool scope did not bind endpoint")
+	}
+}
+
+func TestUnconfirmedWorkflowOutcomesAreNotDeliveredRetriedOrSpooled(t *testing.T) {
+	cases := map[string]string{
+		"failed":        `{"execution_id":"00000000-0000-4000-8000-000000000002","status":"Failed","error":"synthetic"}`,
+		"timeout":       `{"execution_id":"00000000-0000-4000-8000-000000000003","status":"Timeout"}`,
+		"async pending": `{"execution_id":"00000000-0000-4000-8000-000000000004","status":"Pending"}`,
+		"with errors":   `{"status":"CompletedWithErrors"}`,
+		"empty body":    ``,
+		"no status":     `{"execution_id":"00000000-0000-4000-8000-000000000005"}`,
+		"not json":      `<html>ok</html>`,
+	}
+	for name, reply := range cases {
+		t.Run(name, func(t *testing.T) {
+			spool := filepath.Join(t.TempDir(), "spool")
+			srv, _, calls := recorderWith(t, 0, http.StatusOK, reply)
+			env := testEnvelope()
+			res, err := Send(env, Options{
+				Endpoint: srv.URL, ChunkBytes: 0, MaxRetries: 4, SpoolDir: spool,
+				ScanID: env.ScanID, Sleep: noSleep, Jitter: noJitter,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Delivered {
+				t.Fatalf("unconfirmed outcome reported as delivered: %+v", res)
+			}
+			if *calls != 1 {
+				t.Fatalf("a 2xx answer must not be retried; calls=%d", *calls)
+			}
+			if res.Spooled != 0 {
+				t.Fatalf("a 2xx answer must not be spooled for replay; spooled=%d", res.Spooled)
+			}
+			if len(res.Unconfirmed) != 1 {
+				t.Fatalf("expected one unconfirmed chunk, got %q", res.Unconfirmed)
+			}
+			if strings.Contains(res.Unconfirmed[0], "synthetic") {
+				t.Fatalf("workflow error text leaked into the report: %q", res.Unconfirmed[0])
+			}
+		})
+	}
+}
+
+func TestSpooledChunkAnsweredWithoutSuccessIsDroppedNotReplayed(t *testing.T) {
+	var phase atomic.Int32 // 0: unavailable, 1: workflow fails, 2: success
+	var posts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts.Add(1)
+		switch phase.Load() {
+		case 0:
+			w.WriteHeader(http.StatusServiceUnavailable)
+		case 1:
+			_, _ = io.WriteString(w, `{"status":"Failed"}`)
+		default:
+			_, _ = io.WriteString(w, successReply)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	spool := filepath.Join(t.TempDir(), "spool")
+	env := testEnvelope()
+	opts := Options{
+		Endpoint: srv.URL, ChunkBytes: 0, MaxRetries: 1, SpoolDir: spool,
+		ScanID: env.ScanID, Sleep: noSleep, Jitter: noJitter,
+	}
+
+	res, err := Send(env, opts)
+	if err != nil || res.Delivered || res.Spooled != 1 {
+		t.Fatalf("expected one spooled chunk while unavailable: %+v, %v", res, err)
+	}
+
+	phase.Store(1)
+	res, err = Send(env, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Delivered || res.Spooled != 0 || len(res.Unconfirmed) != 2 {
+		t.Fatalf("replay and new chunk should both be unconfirmed and nothing kept: %+v", res)
+	}
+	if !strings.HasPrefix(res.Unconfirmed[0], "spooled ") {
+		t.Fatalf("first unconfirmed entry should be the spooled replay: %q", res.Unconfirmed)
+	}
+
+	phase.Store(2)
+	posts.Store(0)
+	res, err = Send(env, opts)
+	if err != nil || !res.Delivered || res.Spooled != 0 || len(res.Unconfirmed) != 0 {
+		t.Fatalf("expected clean delivery: %+v, %v", res, err)
+	}
+	if posts.Load() != int32(res.Chunks) {
+		t.Fatalf("dropped spool was replayed: posts=%d chunks=%d", posts.Load(), res.Chunks)
 	}
 }

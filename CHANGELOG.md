@@ -5,6 +5,18 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- Inventory delivery (Go agent and PowerShell package) now counts a chunk as
+  delivered only when the Bifrost endpoint reports workflow status `Success`.
+  Bifrost answers HTTP 200 for failed and timed-out workflows too (and
+  `Pending` for async ones). Previously those counted as delivered and advanced
+  the delta baseline, so changes were silently lost. An answered but unconfirmed
+  chunk is not retried or spooled, because the workflow may have run. The
+  baseline stays put, so the next scan resends the changes, and the run exits
+  with code 3 and lists the unconfirmed chunks. The ingest workflow must use
+  sync execution for delivery to be confirmed.
+
 ### Security
 
 - Platform collectors now surface access, execution, parse, and file failures

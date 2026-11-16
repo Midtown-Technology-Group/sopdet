@@ -2,8 +2,12 @@ package app
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -60,5 +64,52 @@ func TestRunMinimalDryRunValidates(t *testing.T) {
 	}
 	if err := sch.Validate(instance); err != nil {
 		t.Fatalf("output failed schema: %v", err)
+	}
+}
+
+// A Bifrost sync endpoint answers HTTP 200 even when the workflow failed.
+// The delta baseline must only advance after a confirmed Success.
+func TestStateAdvancesOnlyAfterConfirmedWorkflowSuccess(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
+	t.Setenv("HOME", dir)
+	var succeed atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if succeed.Load() {
+			_, _ = io.WriteString(w, `{"execution_id":"00000000-0000-4000-8000-000000000006","status":"Success"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"execution_id":"00000000-0000-4000-8000-000000000007","status":"Failed"}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := config.Defaults()
+	cfg.Profile = "minimal"
+	cfg.Endpoint = srv.URL
+	cfg.Delta = true
+	cfg.MaxRetries = 1
+	cfg.StatePath = filepath.Join(dir, "state.json")
+
+	res, err := Run(context.Background(), cfg, "test", nil)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Delivered || len(res.Unconfirmed) == 0 {
+		t.Fatalf("failed workflow must not count as delivered: %+v", res)
+	}
+	if _, err := os.Stat(cfg.StatePath); !os.IsNotExist(err) {
+		t.Fatalf("delta baseline advanced after an unconfirmed delivery (stat err=%v)", err)
+	}
+
+	succeed.Store(true)
+	res, err = Run(context.Background(), cfg, "test", nil)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !res.Delivered {
+		t.Fatalf("confirmed delivery not reported: %+v", res)
+	}
+	if _, err := os.Stat(cfg.StatePath); err != nil {
+		t.Fatalf("delta baseline not saved after confirmed delivery: %v", err)
 	}
 }

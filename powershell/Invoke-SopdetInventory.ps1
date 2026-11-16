@@ -334,7 +334,31 @@ function Invoke-IngestPost([string]$Url, [string]$ApiKey, [string]$Body, [string
         ErrorAction = 'Stop'
     }
     if ($Proxy) { $req['Proxy'] = $Proxy }
-    Invoke-RestMethod @req | Out-Null
+    return (Invoke-RestMethod @req)
+}
+
+function Format-SafeField([string]$Value) {
+    $v = $Value -replace '[\x00-\x1f\x7f]', ''
+    if ($v.Length -gt 64) { $v = $v.Substring(0, 64) }
+    return $v
+}
+
+# Bifrost endpoints answer HTTP 200 for every sync workflow outcome (including
+# Failed and Timeout) and Pending for async workflows. Only a Success status
+# confirms the chunk was applied. Returns $null when confirmed, otherwise the
+# reason. The workflow's error text is deliberately not read.
+function Get-IngestUnconfirmedReason($Response) {
+    $status = $null
+    if ($null -ne $Response -and $Response -isnot [string] -and $Response.PSObject.Properties['status']) {
+        $status = [string]$Response.status
+    }
+    if ($status -ceq 'Success') { return $null }
+    if (-not $status) { return 'response did not report a workflow status' }
+    $reason = "workflow status `"$(Format-SafeField $status)`""
+    if ($Response.PSObject.Properties['execution_id'] -and $Response.execution_id) {
+        $reason += " (execution $(Format-SafeField ([string]$Response.execution_id)))"
+    }
+    return $reason
 }
 
 function Limit-EntitySize($Ent, $Header, [string]$Name, [bool]$UseCompress, [int]$ChunkBytes) {
@@ -373,14 +397,22 @@ function Send-Ingest($Header, $Entities, [string]$Url, [string]$ApiKey, [bool]$U
     Assert-IngestEndpoint $Url
     $SpoolDir = Join-Path $SpoolDir (Get-SpoolScope $Url $ApiKey)
     $delivered = $true
+    $unconfirmed = New-Object System.Collections.Generic.List[string]
     if (Test-Path $SpoolDir) {
         foreach ($f in (Get-ChildItem $SpoolDir -Filter '*.json' -ErrorAction SilentlyContinue | Sort-Object Name)) {
-            $ok = $false
+            $answered = $false
+            $reason = $null
             for ($a = 1; $a -le $MaxRetries; $a++) {
-                try { Invoke-IngestPost $Url $ApiKey (Get-Content $f.FullName -Raw) $Proxy; $ok = $true; break }
+                try { $reason = Get-IngestUnconfirmedReason (Invoke-IngestPost $Url $ApiKey (Get-Content $f.FullName -Raw) $Proxy); $answered = $true; break }
                 catch { Start-Sleep -Milliseconds ([int]([math]::Pow(2, $a) * 500 + (Get-Random -Maximum 500))) }
             }
-            if ($ok) { Remove-Item $f.FullName -Force -ErrorAction SilentlyContinue } else { $delivered = $false }
+            # An answered replay is never replayed again: an unconfirmed scan
+            # never advanced the delta baseline, so later scans resend it.
+            if ($answered) { Remove-Item $f.FullName -Force -ErrorAction SilentlyContinue } else { $delivered = $false }
+            if ($answered -and $reason) {
+                $delivered = $false
+                $unconfirmed.Add("spooled $($f.Name): $reason")
+            }
         }
     }
     $groups = New-Object System.Collections.Generic.List[object]
@@ -422,12 +454,19 @@ function Send-Ingest($Header, $Entities, [string]$Url, [string]$ApiKey, [bool]$U
             $bodyObj.Add('payload', $jsonChunk)
         }
         $body = $bodyObj | ConvertTo-Json -Depth 24 -Compress
-        $ok = $false
+        $answered = $false
+        $reason = $null
         for ($a = 1; $a -le $MaxRetries; $a++) {
-            try { Invoke-IngestPost $Url $ApiKey $body $Proxy; $ok = $true; break }
+            try { $reason = Get-IngestUnconfirmedReason (Invoke-IngestPost $Url $ApiKey $body $Proxy); $answered = $true; break }
             catch { Start-Sleep -Milliseconds ([int]([math]::Pow(2, $a) * 500 + (Get-Random -Maximum 500))) }
         }
-        if (-not $ok) {
+        # A 2xx answer is final: the workflow may have run, so never retry or
+        # spool it. Unconfirmed chunks keep the delta baseline unchanged.
+        if ($answered -and $reason) {
+            $delivered = $false
+            $unconfirmed.Add("chunk ${i}: $reason")
+        }
+        if (-not $answered) {
             try {
                 if (-not (Test-Path $SpoolDir)) { New-Item -ItemType Directory -Force -Path $SpoolDir | Out-Null }
                 Write-Utf8 -Path (Join-Path $SpoolDir ("$ScanId-$i.json")) -Text $body
@@ -437,7 +476,7 @@ function Send-Ingest($Header, $Entities, [string]$Url, [string]$ApiKey, [bool]$U
         }
     }
     $pending = @(Get-ChildItem $SpoolDir -Filter '*.json' -ErrorAction SilentlyContinue).Count
-    return [ordered]@{ delivered = $delivered; chunks = $count; spooled = $pending }
+    return [ordered]@{ delivered = $delivered; chunks = $count; spooled = $pending; unconfirmed = @($unconfirmed) }
 }
 
 function Get-VmSystem($cs) {
@@ -2077,6 +2116,7 @@ if ($DryRun -or -not $Endpoint) {
         device_id = $Identity.device_id
         chunks    = $ingestResult.chunks
         spooled   = $ingestResult.spooled
+        unconfirmed = @($ingestResult.unconfirmed)
     } | ConvertTo-Json -Depth 6 -Compress
 }
 
