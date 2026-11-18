@@ -50,15 +50,19 @@ const (
 
 // ClaimedJob mirrors the frozen claim-response schema.
 type ClaimedJob struct {
-	JobID             string         `json:"job_id"`
-	ScriptName        string         `json:"script_name"`
-	ScriptContent     string         `json:"script_content"`
-	Params            map[string]any `json:"params"`
-	TimeoutSeconds    int            `json:"timeout_seconds"`
-	MaxOutputBytes    int64          `json:"max_output_bytes"`
-	ClaimToken        string         `json:"claim_token"`
-	ClaimedAt         time.Time      `json:"claimed_at"`
-	ClaimLeaseSeconds int            `json:"claim_lease_seconds"`
+	JobID          string         `json:"job_id"`
+	ScriptName     string         `json:"script_name"`
+	ScriptContent  string         `json:"script_content"`
+	Params         map[string]any `json:"params"`
+	TimeoutSeconds int            `json:"timeout_seconds"`
+	MaxOutputBytes int64          `json:"max_output_bytes"`
+	ClaimToken     string         `json:"claim_token"`
+	ClaimedAt      time.Time      `json:"claimed_at"`
+	// ClaimLeaseSeconds is the server's claim TTL. The frozen M0 protocol
+	// exposes no renewal endpoint (heartbeat carries no claim_token), so
+	// the agent performs no renewal; long jobs rely on the server's lost
+	// policy. Renewal is deferred on Bifrost #1059.
+	ClaimLeaseSeconds int `json:"claim_lease_seconds"`
 }
 
 // HeartbeatStatus is the frozen heartbeat response.
