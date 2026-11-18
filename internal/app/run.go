@@ -85,16 +85,25 @@ func Run(ctx context.Context, cfg config.Config, agentVersion string, rep *progr
 	posting := cfg.Endpoint != "" && !cfg.DryRun
 	target := state.LocalTarget
 	if posting {
-		target = state.TargetID(cfg.Endpoint, cfg.APIKey)
+		target = ingest.Scope(cfg.Endpoint, cfg.APIKey)
 	}
-	if cfg.Delta {
-		st, err := state.Load(statePath)
-		if err != nil {
+	var st *state.State
+	if cfg.Delta || posting {
+		loaded, err := state.Load(statePath)
+		if err != nil && cfg.Delta {
 			return Result{}, err
 		}
-		// A baseline recorded for another target (a different endpoint, a dry
-		// run, or an older state file) says nothing about what this target
-		// holds, so send a full snapshot instead of a delta against it.
+		st = loaded
+	}
+	// Posting under another identity can change what the receiver holds,
+	// for example by replaying chunks spooled under this one, so the old
+	// baseline no longer describes it. Drop it before anything is sent: until
+	// a delivery here is confirmed, every target starts from a snapshot.
+	staleBaseline := posting && st != nil && st.Target != target
+	if cfg.Delta {
+		// A baseline recorded for another target (a different endpoint or
+		// credential, a dry run, or an older state file) says nothing about
+		// what this target holds, so send a full snapshot instead.
 		if prev := st.BaselineFor(target); prev != nil {
 			if st.ScanID != "" {
 				base = &st.ScanID
@@ -145,6 +154,11 @@ func Run(ctx context.Context, cfg config.Config, agentVersion string, rep *progr
 	res := Result{Envelope: env, Summarized: summarized}
 
 	if posting {
+		if staleBaseline {
+			if err := state.Remove(statePath); err != nil {
+				return res, fmt.Errorf("clear delta baseline for another target: %w", err)
+			}
+		}
 		ir, err := ingest.Send(env, ingest.Options{
 			Endpoint:   cfg.Endpoint,
 			APIKey:     cfg.APIKey,

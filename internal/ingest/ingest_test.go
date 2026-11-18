@@ -355,3 +355,23 @@ func TestSpooledChunkAnsweredWithoutSuccessIsDroppedNotReplayed(t *testing.T) {
 		t.Fatalf("dropped spool was replayed: posts=%d chunks=%d", posts.Load(), res.Chunks)
 	}
 }
+
+func TestScopeIsExactAndNamesTheSpool(t *testing.T) {
+	const ep = "https://example.invalid/ingest"
+	a := Scope(ep, "synthetic-key-a")
+	if filepath.Base(scopedSpoolDir(t.TempDir(), ep, "synthetic-key-a")) != a {
+		t.Fatal("spool directory is not named by Scope")
+	}
+	others := map[string][2]string{
+		"trailing slash":   {ep + "/", "synthetic-key-a"},
+		"leading space":    {" " + ep, "synthetic-key-a"},
+		"other key":        {ep, "synthetic-key-b"},
+		"no key":           {ep, ""},
+		"shifted boundary": {ep + "s", "ynthetic-key-a"},
+	}
+	for name, o := range others {
+		if Scope(o[0], o[1]) == a {
+			t.Fatalf("%s shares a scope", name)
+		}
+	}
+}

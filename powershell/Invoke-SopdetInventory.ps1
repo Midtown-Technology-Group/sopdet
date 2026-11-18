@@ -215,23 +215,10 @@ function Convert-StateToMap($State) {
     return $maps
 }
 
-# Names where a delta baseline was delivered: 'local' for a run that posts
-# nowhere, otherwise a hash of the endpoint and API key exactly as given, the
-# same pair Get-SpoolScope uses. A baseline then never outruns chunks still
-# spooled under another spelling of the endpoint or another key; changing
-# either starts from a full snapshot. The state file holds neither value.
-function Get-DeliveryTarget([string]$Url, [string]$ApiKey) {
-    $e = [string]$Url
-    if (-not $e) { return 'local' }
-    $sha = [Security.Cryptography.SHA256]::Create()
-    try {
-        $hash = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes("$e`0$ApiKey"))
-    } finally { $sha.Dispose() }
-    return ('sha256:' + (($hash | ForEach-Object { $_.ToString('x2') }) -join ''))
-}
-
-# A baseline describes only what its target holds. State recorded for another
-# endpoint, a dry run, or before targets were recorded yields no baseline.
+# A baseline describes only what its target holds: 'local' for a run that posts
+# nowhere, otherwise the spool scope of the endpoint and key (Get-SpoolScope),
+# so a baseline and the chunks still spooled for it share one identity. State
+# recorded for another target, or before targets were recorded, is no baseline.
 function Test-BaselineTarget($State, [string]$Target) {
     if ($null -eq $State) { return $false }
     $recorded = $null
@@ -2062,9 +2049,14 @@ $baseScanId = $null
 $statePath = Resolve-StatePath $StatePath
 $posting = [bool]$Endpoint -and -not $DryRun
 $deliveryTarget = 'local'
-if ($posting) { $deliveryTarget = Get-DeliveryTarget $Endpoint $ApiKey }
+if ($posting) { $deliveryTarget = Get-SpoolScope $Endpoint $ApiKey }
+$prevState = $null
+if ($Delta -or $posting) { $prevState = Read-JsonFile $statePath }
+# Posting under another identity can change what the receiver holds, for
+# example by replaying chunks spooled under this one, so the old baseline no
+# longer describes it. It is removed before anything is sent.
+$staleBaseline = $posting -and $null -ne $prevState -and -not (Test-BaselineTarget $prevState $deliveryTarget)
 if ($Delta) {
-    $prevState = Read-JsonFile $statePath
     $prevMaps = @{}
     if (Test-BaselineTarget $prevState $deliveryTarget) { $prevMaps = Convert-StateToMap $prevState }
     if ($prevMaps.Count -gt 0) {
@@ -2135,6 +2127,7 @@ if (-not $posting) {
     $delivered = $true
 } else {
     $spoolDir = Join-Path $env:LOCALAPPDATA 'Sopdet\spool'
+    if ($staleBaseline) { Remove-Item -LiteralPath $statePath -Force -ErrorAction Stop }
     $ingestResult = Send-Ingest $header $script:OutEntities $Endpoint $ApiKey $Compress.IsPresent $ChunkBytes $MaxRetries $Proxy $spoolDir $envelope.scan_id
     $delivered = [bool]$ingestResult.delivered
     [ordered]@{

@@ -18,10 +18,12 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
   sync execution for delivery to be confirmed.
 
 - A delta baseline is now tied to the endpoint and ingest key it was delivered
-  with, the same identity that scopes the retry spool. A run that delivers
-  somewhere else, including a new endpoint or a rotated key, sends a full
-  snapshot instead of a delta against inventory that target never received or
-  that a stale spooled chunk could roll back. Dry runs
+  with: it records the retry spool's scope, so a baseline and the chunks still
+  spooled for it share one identity. A run that delivers somewhere else,
+  including a new endpoint or a rotated key, sends a full snapshot instead of a
+  delta against inventory that target never received, and discards the old
+  baseline before posting, because replaying its own spooled chunks can change
+  what the receiver holds. Dry runs
   no longer leave a baseline that a later real run would diff against. State
   files written by earlier versions record no endpoint, so the first scan after
   upgrading is a full snapshot. Applies to the Go agent and the PowerShell

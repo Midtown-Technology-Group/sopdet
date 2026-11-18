@@ -196,14 +196,22 @@ func wire(payload string, compress bool) (string, error) {
 	return payload, nil
 }
 
+// Scope names the identity pending inventory is bound to: this implementation,
+// the endpoint exactly as configured, and the credential. It names the spool
+// directory, and the delta baseline records it so a baseline and the chunks
+// still spooled for it always share one identity.
+func Scope(endpoint, apiKey string) string {
+	sum := sha256.Sum256([]byte("go\x00" + endpoint + "\x00" + apiKey))
+	return fmt.Sprintf("go-%x", sum[:16])
+}
+
 // scopedSpoolDir binds pending inventory to its original implementation,
 // endpoint and credential. Legacy unscoped files are never replayed.
 func scopedSpoolDir(base, endpoint, apiKey string) string {
 	if base == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte("go\x00" + endpoint + "\x00" + apiKey))
-	return filepath.Join(base, fmt.Sprintf("go-%x", sum[:16]))
+	return filepath.Join(base, Scope(endpoint, apiKey))
 }
 
 // Send delivers an envelope, draining any previously spooled chunks first.

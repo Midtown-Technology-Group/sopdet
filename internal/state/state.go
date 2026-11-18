@@ -2,8 +2,6 @@
 package state
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -18,9 +16,10 @@ type State struct {
 	ObservedAt      string `json:"observed_at"`
 	Agent           string `json:"agent,omitempty"`
 	FingerprintAlgo string `json:"fingerprint_algo"`
-	// Target identifies where this baseline was delivered (see TargetID). A
-	// baseline only describes what that target holds, so a delta is built from
-	// it only when the run delivers to the same target.
+	// Target identifies where this baseline was delivered: LocalTarget, or
+	// the ingest spool scope of the endpoint and credential. A baseline only
+	// describes what that target holds, so a delta is built from it only when
+	// the run delivers to the same target.
 	Target   string                       `json:"target,omitempty"`
 	Entities map[string]map[string]string `json:"entities"`
 }
@@ -28,22 +27,6 @@ type State struct {
 // LocalTarget is the target of a run that delivers nowhere: dry runs and
 // file or stdout output.
 const LocalTarget = "local"
-
-// TargetID names the delivery target of a run: the endpoint and API key exactly
-// as given, the same pair the ingest spool scope uses. An empty endpoint means
-// the run does not post. A baseline and the chunks still spooled for it must
-// share one identity; otherwise a stale spooled delta could replay after a newer
-// delivery recorded under another spelling of the endpoint or another key, and
-// leave the receiver behind the saved baseline. Changing either one therefore
-// starts from a full snapshot. The pair is hashed so the state file carries
-// neither the URL nor the key.
-func TargetID(endpoint, apiKey string) string {
-	if endpoint == "" {
-		return LocalTarget
-	}
-	sum := sha256.Sum256([]byte(endpoint + "\x00" + apiKey))
-	return "sha256:" + hex.EncodeToString(sum[:])
-}
 
 // BaselineFor returns the fingerprint maps to diff against when delivering to
 // target, or nil when the state was recorded for a different target, including
@@ -75,6 +58,17 @@ func Load(path string) (*State, error) {
 		return nil, err
 	}
 	return &s, nil
+}
+
+// Remove deletes the state file; an absent file is not an error.
+func Remove(path string) error {
+	if path == "" {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // Save writes state atomically.

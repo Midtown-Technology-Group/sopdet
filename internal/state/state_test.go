@@ -60,36 +60,20 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
-func TestTargetIDIsExactAndHidesEndpoint(t *testing.T) {
-	const ep = "https://bifrost.example.test/api/endpoints/00000000-0000-4000-8000-000000000001"
-	const key = "synthetic-key-a"
-	if got := TargetID("", key); got != LocalTarget {
-		t.Fatalf("empty endpoint = %q, want %q", got, LocalTarget)
+func TestRemoveToleratesAbsentState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := Remove(path); err != nil {
+		t.Fatalf("absent state: %v", err)
 	}
-	a := TargetID(ep, key)
-	if a != TargetID(ep, key) {
-		t.Fatal("the same endpoint and key produced different targets")
+	s := Snapshot("scan-1", ts, "test", schema.FingerprintAlgo, LocalTarget, nil)
+	if err := Save(path, s); err != nil {
+		t.Fatal(err)
 	}
-	// Exact, like the ingest spool scope: another spelling or another key is
-	// another target, so its baseline never outruns chunks spooled under this one.
-	others := map[string][2]string{
-		"trailing slash":   {ep + "/", key},
-		"leading space":    {" " + ep, key},
-		"other endpoint":   {ep + "x", key},
-		"other key":        {ep, "synthetic-key-b"},
-		"no key":           {ep, ""},
-		"shifted boundary": {ep + "s", "ynthetic-key-a"},
+	if err := Remove(path); err != nil {
+		t.Fatal(err)
 	}
-	for name, o := range others {
-		if TargetID(o[0], o[1]) == a {
-			t.Fatalf("%s shares a target", name)
-		}
-	}
-	if a == LocalTarget {
-		t.Fatal("a posting target equals the local target")
-	}
-	if len(a) != len("sha256:")+64 || a[:7] != "sha256:" {
-		t.Fatalf("target %q is not a sha256 digest", a)
+	if got, err := Load(path); err != nil || got != nil {
+		t.Fatalf("state survived removal: %v %v", got, err)
 	}
 }
 
@@ -97,8 +81,7 @@ func TestBaselineForOnlyMatchesItsTarget(t *testing.T) {
 	entities := map[string]*schema.EntityCollection{
 		"os": schema.BuildEntity([]schema.Record{{"key": "os", "name": "X"}}, ts),
 	}
-	a := TargetID("https://bifrost.example.test/api/endpoints/a", "synthetic-key")
-	b := TargetID("https://bifrost.example.test/api/endpoints/b", "synthetic-key")
+	const a, b = "go-0123456789abcdef0123456789abcdef", "go-fedcba9876543210fedcba9876543210"
 	s := Snapshot("scan-1", ts, "test", schema.FingerprintAlgo, a, entities)
 	if s.BaselineFor(a) == nil {
 		t.Fatal("baseline not used for the target it was delivered to")

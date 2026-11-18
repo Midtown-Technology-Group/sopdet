@@ -125,6 +125,9 @@ type actionRecorder struct {
 	mu      sync.Mutex
 	actions []string
 	down    atomic.Bool // answer 503 without recording, so chunks spool
+	// failSnapshots answers recorded snapshot chunks with workflow status
+	// Failed, so they are unconfirmed rather than spooled.
+	failSnapshots atomic.Bool
 }
 
 func (a *actionRecorder) serve(t *testing.T) *httptest.Server {
@@ -169,6 +172,10 @@ func (a *actionRecorder) serve(t *testing.T) *httptest.Server {
 		a.mu.Lock()
 		a.actions = append(a.actions, env.Action)
 		a.mu.Unlock()
+		if env.Action == "snapshot" && a.failSnapshots.Load() {
+			_, _ = io.WriteString(w, `{"execution_id":"00000000-0000-4000-8000-000000000009","status":"Failed"}`)
+			return
+		}
 		_, _ = io.WriteString(w, `{"execution_id":"00000000-0000-4000-8000-000000000008","status":"Success"}`)
 	}))
 	t.Cleanup(srv.Close)
@@ -324,5 +331,68 @@ func TestStaleSpoolForAnotherIdentityIsFollowedBySnapshot(t *testing.T) {
 				t.Fatalf("final run sent %v; want the stale spooled delta, then a snapshot", got)
 			}
 		})
+	}
+}
+
+// A stale chunk can replay successfully under one identity while the snapshot
+// that should follow it is unconfirmed. The baseline saved under another
+// identity no longer describes the receiver, so returning to that identity must
+// send a snapshot, not an unchanged delta.
+func TestUnconfirmedRepairDoesNotLeaveOtherBaselineUsable(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
+	t.Setenv("HOME", dir)
+	var rec actionRecorder
+	srv := rec.serve(t)
+
+	cfg := config.Defaults()
+	cfg.Profile = "minimal"
+	cfg.Delta = true
+	cfg.MaxRetries = 1
+	cfg.StatePath = filepath.Join(dir, "state.json")
+	run := func(key string) Result {
+		t.Helper()
+		c := cfg
+		c.Endpoint = srv.URL
+		c.APIKey = key
+		res, err := Run(context.Background(), c, "test", nil)
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		return res
+	}
+
+	if !run("synthetic-key-a").Delivered {
+		t.Fatal("baseline run under A not delivered")
+	}
+	rec.down.Store(true)
+	if res := run("synthetic-key-a"); res.Delivered || res.Spooled == 0 {
+		t.Fatalf("outage did not spool under A: %+v", res)
+	}
+	rec.down.Store(false)
+	if !run("synthetic-key-b").Delivered {
+		t.Fatal("delivery under B failed")
+	}
+
+	// Back on A: the spooled delta replays and succeeds, the snapshot fails.
+	rec.failSnapshots.Store(true)
+	from := rec.count()
+	if res := run("synthetic-key-a"); res.Delivered || len(res.Unconfirmed) == 0 {
+		t.Fatalf("snapshot under A should be unconfirmed: %+v", res)
+	}
+	rec.mu.Lock()
+	replayed := append([]string(nil), rec.actions[from:]...)
+	rec.mu.Unlock()
+	if len(replayed) < 2 || replayed[0] != "delta" {
+		t.Fatalf("run under A sent %v; want the spooled delta replayed first", replayed)
+	}
+	rec.failSnapshots.Store(false)
+
+	from = rec.count()
+	if !run("synthetic-key-b").Delivered {
+		t.Fatal("return to B not delivered")
+	}
+	if got := rec.last(t, from); got != "snapshot" {
+		t.Fatalf("return to B sent %q; the receiver was changed under A, so B's old baseline must not be used", got)
 	}
 }
