@@ -74,7 +74,7 @@ code 3.
 | `-endpoint` / `SOPDET_API_KEY` | Bifrost ingest endpoint and key (key via environment or protected config file) |
 | `-out` | write the envelope to a file |
 | `-compress` | gzip+base64 the payload |
-| `-delta` | send only changes since the last scan delivered to the same endpoint with the same key; otherwise a full snapshot |
+| `-delta` | send only changes since the last scan delivered to the same endpoint with the same key; a run that posts nowhere (no endpoint, or `-dry-run`) diffs against the last such run, so its output can be a delta rather than a full inventory; otherwise a full snapshot |
 | `-dry-run` | collect only; never post |
 | `-proxy`, `-state` | proxy URL, delta state file |
 | `-include-appx`, `-include-processes` | extra entities |
