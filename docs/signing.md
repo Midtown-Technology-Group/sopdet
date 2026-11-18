@@ -118,11 +118,11 @@ and a fake signtool. These checks make no signing requests and do not prove live
 certificate trust, WDAC acceptance, or preservation of Ninja-delivered script
 signatures; those remain later acceptance checks.
 
-CI also runs the suite with `-CoveragePath signing-coverage.xml`. PowerShell
+CI runs the suite in the PowerShell and Windows equivalence jobs. For a local
+line-coverage report, pass `-CoveragePath signing-coverage.xml`; PowerShell
 debugger breakpoints record actual line hits in the suite and the byte-identical
-copy of the signing helper. The report is imported through Sonar's generic
-coverage format alongside Go coverage; no coverage exclusions or gate thresholds
-are changed.
+copy of the signing helper. Sonar coverage covers Go sources only, so CI does not
+import that report.
 
 ## CI signing identity (planned)
 
