@@ -414,6 +414,11 @@ def tag_chain(sha):
             raise GateError(
                 20, "BASE_ERROR: nested tag chain is too deep; publication blocked."
             )
+        # Check the size before reading: captured Git output is held in memory.
+        if int(git("cat-file", "-s", sha)) > 64 * 1024:
+            raise GateError(
+                20, "BASE_ERROR: oversized tag annotation; publication blocked."
+            )
         headers = git("cat-file", "tag", sha, strip=False).partition("\n\n")[0]
         target = re.match(r"object ([0-9a-f]{40}|[0-9a-f]{64})\ntype ", headers)
         if not target:
@@ -483,10 +488,7 @@ def write_annotations(tags, directory):
     for sha in tags:
         if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
             raise GateError(20, "BASE_ERROR: invalid outgoing tag identity.")
-        if int(git("cat-file", "-s", sha)) > 64 * 1024:
-            raise GateError(
-                20, "BASE_ERROR: oversized tag annotation; publication blocked."
-            )
+        # tag_chain() already bounded each object's size before reading it.
         text = git("cat-file", "tag", sha, strip=False)
         if "\x00" in text:
             raise GateError(

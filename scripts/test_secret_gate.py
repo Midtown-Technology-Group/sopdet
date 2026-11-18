@@ -1406,12 +1406,33 @@ class SecretGateTests(unittest.TestCase):
         self.assertEqual(result.returncode, 20)
         self.assertIn("oversized tag annotation", result.stderr)
 
+    def test_oversized_tag_is_rejected_before_its_text_is_read(self):
+        """Bound memory: the size check precedes reading the tag object."""
+        sha = "a" * 40
+
+        def fake_git(*args, strip=True):
+            if args[:2] == ("cat-file", "-t"):
+                return "tag"
+            if args[:2] == ("cat-file", "-s"):
+                return str(64 * 1024 + 1)
+            raise AssertionError(f"unexpected read: {args}")
+
+        with (
+            patch("secret_gate.git", side_effect=fake_git),
+            self.assertRaises(secret_gate.GateError) as caught,
+        ):
+            secret_gate.tag_chain(sha)
+        self.assertEqual(caught.exception.code, 20)
+        self.assertIn("oversized tag annotation", caught.exception.message)
+
     def test_incomplete_annotation_receipt_blocks(self):
         """The annotation scan needs one clean receipt per document."""
         self.git("tag", "-a", "-m", "Release 1.0", "release")
         self.git("tag", "-a", "-m", "Release 1.0 again", "again", "release")
-        result = self.push_tag("again", GATE_MESSAGE_RECEIPT="omit")
+        # old=HEAD leaves no new commits, so the failing scan is the annotation scan.
+        result = self.push_tag("again", old=self.head, GATE_MESSAGE_RECEIPT="omit")
         self.assertEqual(result.returncode, 4)
+        self.assertEqual(self.message_scans(), [2])
         self.assertNotIn("sensitive-output-must-stay-private", result.stderr)
 
     def test_valid_equal_base_ref_is_supported(self):
