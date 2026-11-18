@@ -61,6 +61,12 @@ make vet
 Flags override the config file; a missing `inventory.config.json` next to the
 binary is loaded automatically.
 
+A chunk counts as delivered only when the endpoint response reports workflow
+`status: "Success"`, so configure the ingest workflow for **sync** execution.
+Any other answer, such as `Failed`, `Timeout` or an async `Pending`, leaves the
+delta baseline unchanged so the next scan resends. The run then exits with
+code 3.
+
 | Flag | Meaning |
 |---|---|
 | `-config` | config file path |
@@ -68,7 +74,7 @@ binary is loaded automatically.
 | `-endpoint` / `SOPDET_API_KEY` | Bifrost ingest endpoint and key (key via environment or protected config file) |
 | `-out` | write the envelope to a file |
 | `-compress` | gzip+base64 the payload |
-| `-delta` | send only changes after a baseline snapshot |
+| `-delta` | send only changes since the last scan delivered to the same endpoint with the same key; a run that posts nowhere (no endpoint, or `-dry-run`) diffs against the last such run, so its output can be a delta rather than a full inventory; otherwise a full snapshot |
 | `-dry-run` | collect only; never post |
 | `-proxy`, `-state` | proxy URL, delta state file |
 | `-include-appx`, `-include-processes` | extra entities |
@@ -177,6 +183,10 @@ One envelope per scan. Every entity record carries a stable `key`, a content
 `entity_errors` (with `gated: true` for access-denied) rather than guessed. See
 [`schema/inventory.schema.json`](schema/inventory.schema.json) and
 [`WHAT-IT-COLLECTS.md`](WHAT-IT-COLLECTS.md).
+
+A delta baseline belongs to the endpoint and ingest key it was delivered with,
+exactly as configured. A changed endpoint or key, a dry run, or a state file
+from an earlier version makes the next delivery a full snapshot.
 
 Modes: `action=snapshot` (full), `action=delta` (added/changed/removed after a
 baseline), per-entity transport chunks (`chunk`), and `-MaxPayloadBytes` size

@@ -46,6 +46,69 @@ type Result struct {
 	Spooled           int
 	UncompressedBytes int
 	CompressedBytes   int
+	// Unconfirmed lists chunks the endpoint answered without confirming a
+	// successful workflow run (for example status "Failed", "Timeout" or an
+	// async "Pending"). They are neither retried nor spooled: the workflow
+	// may already have run. The caller must not advance its delta baseline,
+	// so the next scan resends the changes.
+	Unconfirmed []string
+}
+
+// successStatus is the only Bifrost endpoint workflow status that confirms
+// the chunk was applied. Upstream answers HTTP 200 for every sync outcome,
+// including "Failed" and "Timeout", and "Pending" for async workflows.
+const successStatus = "Success"
+
+// maxResponseBytes bounds how much of an endpoint response is read.
+const maxResponseBytes = 1 << 20
+
+type postOutcome int
+
+const (
+	// postDelivered: HTTP 2xx and the workflow reported Success.
+	postDelivered postOutcome = iota
+	// postRetry: transport error or non-2xx; retry, then spool.
+	postRetry
+	// postUnconfirmed: the endpoint answered without confirming success.
+	// Never resend; the next scan recomputes from the confirmed baseline.
+	postUnconfirmed
+)
+
+// endpointResponse is the subset of Bifrost's EndpointExecuteResponse used
+// to confirm delivery. The workflow's error text is deliberately not read.
+type endpointResponse struct {
+	ExecutionID string `json:"execution_id"`
+	Status      string `json:"status"`
+}
+
+// confirmDelivery classifies a 2xx endpoint response body.
+func confirmDelivery(raw []byte) (bool, string) {
+	var r endpointResponse
+	if err := json.Unmarshal(raw, &r); err != nil || r.Status == "" {
+		return false, "response did not report a workflow status"
+	}
+	if r.Status == successStatus {
+		return true, ""
+	}
+	reason := fmt.Sprintf("workflow status %q", sanitizeField(r.Status))
+	if r.ExecutionID != "" {
+		reason += fmt.Sprintf(" (execution %s)", sanitizeField(r.ExecutionID))
+	}
+	return false, reason
+}
+
+// sanitizeField keeps server-supplied identifiers short and printable.
+func sanitizeField(v string) string {
+	var b strings.Builder
+	for _, r := range v {
+		if b.Len() >= 64 {
+			break
+		}
+		if r >= 0x20 && r != 0x7f {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 type body struct {
@@ -133,14 +196,22 @@ func wire(payload string, compress bool) (string, error) {
 	return payload, nil
 }
 
+// Scope names the identity pending inventory is bound to: this implementation,
+// the endpoint exactly as configured, and the credential. It names the spool
+// directory, and the delta baseline records it so a baseline and the chunks
+// still spooled for it always share one identity.
+func Scope(endpoint, apiKey string) string {
+	sum := sha256.Sum256([]byte("go\x00" + endpoint + "\x00" + apiKey))
+	return fmt.Sprintf("go-%x", sum[:16])
+}
+
 // scopedSpoolDir binds pending inventory to its original implementation,
 // endpoint and credential. Legacy unscoped files are never replayed.
 func scopedSpoolDir(base, endpoint, apiKey string) string {
 	if base == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte("go\x00" + endpoint + "\x00" + apiKey))
-	return filepath.Join(base, fmt.Sprintf("go-%x", sum[:16]))
+	return filepath.Join(base, Scope(endpoint, apiKey))
 }
 
 // Send delivers an envelope, draining any previously spooled chunks first.
@@ -201,7 +272,9 @@ func Send(env *schema.Envelope, opts Options) (Result, error) {
 	}
 	failed := false
 
-	if !opts.drain(client) {
+	drained, unconfirmed := opts.drain(client)
+	res.Unconfirmed = append(res.Unconfirmed, unconfirmed...)
+	if !drained {
 		failed = true
 	}
 
@@ -228,7 +301,12 @@ func Send(env *schema.Envelope, opts Options) (Result, error) {
 		if err != nil {
 			return res, err
 		}
-		if !opts.post(client, req) {
+		switch outcome, reason := opts.post(client, req); outcome {
+		case postDelivered:
+		case postUnconfirmed:
+			res.Unconfirmed = append(res.Unconfirmed, fmt.Sprintf("chunk %d: %s", i, reason))
+			failed = true
+		default:
 			if err := opts.spool(i, req); err != nil {
 				return res, err
 			}
@@ -242,15 +320,19 @@ func Send(env *schema.Envelope, opts Options) (Result, error) {
 	return res, nil
 }
 
-func (o *Options) drain(client *http.Client) bool {
+// drain replays spooled chunks. A replay the endpoint answers without
+// confirming success is removed rather than replayed again: its scan never
+// advanced the delta baseline, so later scans resend those changes.
+func (o *Options) drain(client *http.Client) (bool, []string) {
 	if o.SpoolDir == "" {
-		return true
+		return true, nil
 	}
 	entries, err := os.ReadDir(o.SpoolDir)
 	if err != nil {
-		return true
+		return true, nil
 	}
 	ok := true
+	var unconfirmed []string
 	for _, e := range entries {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
 			continue
@@ -261,16 +343,23 @@ func (o *Options) drain(client *http.Client) bool {
 			ok = false
 			continue
 		}
-		if o.post(client, data) {
+		switch outcome, reason := o.post(client, data); outcome {
+		case postDelivered:
 			_ = os.Remove(p)
-		} else {
+		case postUnconfirmed:
+			_ = os.Remove(p)
+			unconfirmed = append(unconfirmed, fmt.Sprintf("spooled %s: %s", e.Name(), reason))
+			ok = false
+		default:
 			ok = false
 		}
 	}
-	return ok
+	return ok, unconfirmed
 }
 
-func (o *Options) post(client *http.Client, payload []byte) bool {
+// post sends one chunk. Transport errors and non-2xx statuses are retried;
+// a 2xx answer is final either way, because the workflow may have run.
+func (o *Options) post(client *http.Client, payload []byte) (postOutcome, string) {
 	attempts := o.MaxRetries
 	if attempts < 1 {
 		attempts = 1
@@ -278,18 +367,26 @@ func (o *Options) post(client *http.Client, payload []byte) bool {
 	for a := 0; a < attempts; a++ {
 		req, err := http.NewRequest(http.MethodPost, o.Endpoint, bytes.NewReader(payload))
 		if err != nil {
-			return false
+			return postRetry, ""
 		}
 		req.Header.Set("Content-Type", "application/json; charset=utf-8")
+		req.Header.Set("Accept", "application/json")
 		if o.APIKey != "" {
 			req.Header.Set("X-Bifrost-Key", o.APIKey)
 		}
 		resp, err := client.Do(req)
 		if err == nil {
-			io.Copy(io.Discard, resp.Body)
+			raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+			_, _ = io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-				return true
+				if readErr != nil {
+					return postUnconfirmed, "response could not be read"
+				}
+				if ok, reason := confirmDelivery(raw); !ok {
+					return postUnconfirmed, reason
+				}
+				return postDelivered, ""
 			}
 		}
 		if a < attempts-1 {
@@ -297,7 +394,7 @@ func (o *Options) post(client *http.Client, payload []byte) bool {
 			o.sleep(backoff + o.jitter(500*time.Millisecond))
 		}
 	}
-	return false
+	return postRetry, ""
 }
 
 func (o *Options) spool(index int, payload []byte) error {

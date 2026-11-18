@@ -215,14 +215,25 @@ function Convert-StateToMap($State) {
     return $maps
 }
 
-function Get-StateObject([string]$ScanId) {
+# A baseline describes only what its target holds: 'local' for a run that posts
+# nowhere, otherwise the spool scope of the endpoint and key (Get-SpoolScope),
+# so a baseline and the chunks still spooled for it share one identity. State
+# recorded for another target, or before targets were recorded, is no baseline.
+function Test-BaselineTarget($State, [string]$Target) {
+    if ($null -eq $State) { return $false }
+    $recorded = $null
+    try { $recorded = [string]$State.target } catch { Write-Verbose "ignored: $_" }
+    return ($recorded -ceq $Target)
+}
+
+function Get-StateObject([string]$ScanId, [string]$Target) {
     $ents = [ordered]@{}
     foreach ($n in $script:Entities.Keys) {
         $m = [ordered]@{}
         foreach ($r in $script:Entities[$n].records) { $m[$r.key] = $r.fingerprint }
         $ents[$n] = $m
     }
-    return [ordered]@{ schema_version = $SchemaVersion; scan_id = $ScanId; observed_at = $script:NowIso; entities = $ents }
+    return [ordered]@{ schema_version = $SchemaVersion; scan_id = $ScanId; observed_at = $script:NowIso; target = $Target; entities = $ents }
 }
 
 function Get-DeltaEntity($PrevMaps) {
@@ -334,7 +345,31 @@ function Invoke-IngestPost([string]$Url, [string]$ApiKey, [string]$Body, [string
         ErrorAction = 'Stop'
     }
     if ($Proxy) { $req['Proxy'] = $Proxy }
-    Invoke-RestMethod @req | Out-Null
+    return (Invoke-RestMethod @req)
+}
+
+function Format-SafeField([string]$Value) {
+    $v = $Value -replace '[\x00-\x1f\x7f]', ''
+    if ($v.Length -gt 64) { $v = $v.Substring(0, 64) }
+    return $v
+}
+
+# Bifrost endpoints answer HTTP 200 for every sync workflow outcome (including
+# Failed and Timeout) and Pending for async workflows. Only a Success status
+# confirms the chunk was applied. Returns $null when confirmed, otherwise the
+# reason. The workflow's error text is deliberately not read.
+function Get-IngestUnconfirmedReason($Response) {
+    $status = $null
+    if ($null -ne $Response -and $Response -isnot [string] -and $Response.PSObject.Properties['status']) {
+        $status = [string]$Response.status
+    }
+    if ($status -ceq 'Success') { return $null }
+    if (-not $status) { return 'response did not report a workflow status' }
+    $reason = "workflow status `"$(Format-SafeField $status)`""
+    if ($Response.PSObject.Properties['execution_id'] -and $Response.execution_id) {
+        $reason += " (execution $(Format-SafeField ([string]$Response.execution_id)))"
+    }
+    return $reason
 }
 
 function Limit-EntitySize($Ent, $Header, [string]$Name, [bool]$UseCompress, [int]$ChunkBytes) {
@@ -373,14 +408,22 @@ function Send-Ingest($Header, $Entities, [string]$Url, [string]$ApiKey, [bool]$U
     Assert-IngestEndpoint $Url
     $SpoolDir = Join-Path $SpoolDir (Get-SpoolScope $Url $ApiKey)
     $delivered = $true
+    $unconfirmed = New-Object System.Collections.Generic.List[string]
     if (Test-Path $SpoolDir) {
         foreach ($f in (Get-ChildItem $SpoolDir -Filter '*.json' -ErrorAction SilentlyContinue | Sort-Object Name)) {
-            $ok = $false
+            $answered = $false
+            $reason = $null
             for ($a = 1; $a -le $MaxRetries; $a++) {
-                try { Invoke-IngestPost $Url $ApiKey (Get-Content $f.FullName -Raw) $Proxy; $ok = $true; break }
+                try { $reason = Get-IngestUnconfirmedReason (Invoke-IngestPost $Url $ApiKey (Get-Content $f.FullName -Raw) $Proxy); $answered = $true; break }
                 catch { Start-Sleep -Milliseconds ([int]([math]::Pow(2, $a) * 500 + (Get-Random -Maximum 500))) }
             }
-            if ($ok) { Remove-Item $f.FullName -Force -ErrorAction SilentlyContinue } else { $delivered = $false }
+            # An answered replay is never replayed again: an unconfirmed scan
+            # never advanced the delta baseline, so later scans resend it.
+            if ($answered) { Remove-Item $f.FullName -Force -ErrorAction SilentlyContinue } else { $delivered = $false }
+            if ($answered -and $reason) {
+                $delivered = $false
+                $unconfirmed.Add("spooled $($f.Name): $reason")
+            }
         }
     }
     $groups = New-Object System.Collections.Generic.List[object]
@@ -422,12 +465,19 @@ function Send-Ingest($Header, $Entities, [string]$Url, [string]$ApiKey, [bool]$U
             $bodyObj.Add('payload', $jsonChunk)
         }
         $body = $bodyObj | ConvertTo-Json -Depth 24 -Compress
-        $ok = $false
+        $answered = $false
+        $reason = $null
         for ($a = 1; $a -le $MaxRetries; $a++) {
-            try { Invoke-IngestPost $Url $ApiKey $body $Proxy; $ok = $true; break }
+            try { $reason = Get-IngestUnconfirmedReason (Invoke-IngestPost $Url $ApiKey $body $Proxy); $answered = $true; break }
             catch { Start-Sleep -Milliseconds ([int]([math]::Pow(2, $a) * 500 + (Get-Random -Maximum 500))) }
         }
-        if (-not $ok) {
+        # A 2xx answer is final: the workflow may have run, so never retry or
+        # spool it. Unconfirmed chunks keep the delta baseline unchanged.
+        if ($answered -and $reason) {
+            $delivered = $false
+            $unconfirmed.Add("chunk ${i}: $reason")
+        }
+        if (-not $answered) {
             try {
                 if (-not (Test-Path $SpoolDir)) { New-Item -ItemType Directory -Force -Path $SpoolDir | Out-Null }
                 Write-Utf8 -Path (Join-Path $SpoolDir ("$ScanId-$i.json")) -Text $body
@@ -437,7 +487,7 @@ function Send-Ingest($Header, $Entities, [string]$Url, [string]$ApiKey, [bool]$U
         }
     }
     $pending = @(Get-ChildItem $SpoolDir -Filter '*.json' -ErrorAction SilentlyContinue).Count
-    return [ordered]@{ delivered = $delivered; chunks = $count; spooled = $pending }
+    return [ordered]@{ delivered = $delivered; chunks = $count; spooled = $pending; unconfirmed = @($unconfirmed) }
 }
 
 function Get-VmSystem($cs) {
@@ -1997,9 +2047,18 @@ $script:Summarized = $false
 $action = 'snapshot'
 $baseScanId = $null
 $statePath = Resolve-StatePath $StatePath
+$posting = [bool]$Endpoint -and -not $DryRun
+$deliveryTarget = 'local'
+if ($posting) { $deliveryTarget = Get-SpoolScope $Endpoint $ApiKey }
+$prevState = $null
+if ($Delta -or $posting) { $prevState = Read-JsonFile $statePath }
+# Posting under another identity can change what the receiver holds, for
+# example by replaying chunks spooled under this one, so the old baseline no
+# longer describes it. It is removed before anything is sent.
+$staleBaseline = $posting -and $null -ne $prevState -and -not (Test-BaselineTarget $prevState $deliveryTarget)
 if ($Delta) {
-    $prevState = Read-JsonFile $statePath
-    $prevMaps = Convert-StateToMap $prevState
+    $prevMaps = @{}
+    if (Test-BaselineTarget $prevState $deliveryTarget) { $prevMaps = Convert-StateToMap $prevState }
     if ($prevMaps.Count -gt 0) {
         if ($prevState -and $prevState.scan_id) { $baseScanId = [string]$prevState.scan_id }
         $script:OutEntities = Get-DeltaEntity $prevMaps
@@ -2063,11 +2122,12 @@ $header = New-Object System.Collections.Specialized.OrderedDictionary
 foreach ($k in $envelope.Keys) { if ($k -ne 'entities') { $header.Add($k, $envelope[$k]) } }
 
 $delivered = $false
-if ($DryRun -or -not $Endpoint) {
+if (-not $posting) {
     if ($Compress -or $Compact) { Write-Output $jsonWire } else { Write-Output $jsonPretty }
     $delivered = $true
 } else {
     $spoolDir = Join-Path $env:LOCALAPPDATA 'Sopdet\spool'
+    if ($staleBaseline) { Remove-Item -LiteralPath $statePath -Force -ErrorAction Stop }
     $ingestResult = Send-Ingest $header $script:OutEntities $Endpoint $ApiKey $Compress.IsPresent $ChunkBytes $MaxRetries $Proxy $spoolDir $envelope.scan_id
     $delivered = [bool]$ingestResult.delivered
     [ordered]@{
@@ -2077,12 +2137,13 @@ if ($DryRun -or -not $Endpoint) {
         device_id = $Identity.device_id
         chunks    = $ingestResult.chunks
         spooled   = $ingestResult.spooled
+        unconfirmed = @($ingestResult.unconfirmed)
     } | ConvertTo-Json -Depth 6 -Compress
 }
 
 if ($delivered -and -not $script:Summarized) {
     try {
-        $stateObj = Get-StateObject $envelope.scan_id
+        $stateObj = Get-StateObject $envelope.scan_id $deliveryTarget
         Write-Utf8 -Path $statePath -Text ($stateObj | ConvertTo-Json -Depth 24 -Compress)
     } catch { Write-Verbose "ignored: $_" }
 }
