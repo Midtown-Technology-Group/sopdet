@@ -42,15 +42,37 @@ publication is not covered by the scan, stop; do not reuse its clean result.
 `--pre-push` reads Git's standard four-column ref updates from stdin, validates
 all updates, then scans each `old..new` range. Force pushes include all commits
 unique to the new tip. A new ref scans **all reachable history**, including root
-commits; it can cost more API quota. Multiple updates and lightweight commit tags are supported. Annotated tags are
-blocked with exit 20 because commit-range scanning does not cover annotation
-text. Rerunning this gate still exits 20, even after an external annotation scan.
-This gate does not offer a bypass. Unknown tips and non-commit tags block. Deletes have no content.
+commits; it can cost more API quota. Multiple updates, lightweight commit tags
+and annotated tags are supported. For an annotated tag, the gate scans the
+commit history as for any ref, plus the complete text of every tag object
+between the pushed tip and its commit (headers, message and any signature).
+Each tag object is a private document in one `ggshield secret scan path` call,
+with the same per-document receipt check as commit messages. A tag update with
+no new commits still scans its annotation; it is not skipped. Chains deeper
+than 8 tag objects, a tag object over 64 KiB or containing NUL, and tags that do
+not end at a commit block with exit 20. Unknown tips block. Deletes have no content.
+Outgoing commits with an embedded `mergetag` header also block with exit 20
+in every mode: its tag annotation is outside the scanned file patches and
+commit message. An external annotation scan does not bypass this rejection.
 No hooks or Git configuration are installed automatically; compose existing hooks
 rather than replacing them. Agent instructions require the gate even without hooks.
 
 All commits in the selected range reach `ggshield secret scan commit-range`,
-including merged side history and content subsequently removed. There is no hook
+including merged side history and content subsequently removed. Commit messages
+are additionally scanned with `ggshield secret scan path --all-secrets` from
+private temporary UTF-8 documents, removed when the scan ends. Message findings,
+authentication failures and scan errors block with the same exit codes as file
+findings. Complete message documents (including the commit header) over 64 KiB,
+raw commit objects over 128 KiB, or NUL-bearing messages block with exit 20.
+Documents use exact UTF-8 bytes and LF on every platform. A successful process
+exit must also include exactly one clean JSON result for every generated document;
+skipped, duplicate, unexpected, incomplete or unsupported results block with exit 4.
+Scanner JSON stays in memory and is never printed or retained. Git output is
+decoded as UTF-8 on every platform; invalid UTF-8 blocks with scan-error exit 4.
+The gate resolves its own private temporary directory before writing documents
+or starting scanners, so filesystem aliases use the same path spelling as the SDK.
+Scanner-provided paths are compared lexically; they are never resolved or opened.
+There is no hook
 commit-count cap. Native ggshield detector/file limits still apply (including
 binary/oversize content); this is not an attestation that every byte was scanned.
 See the official [commit-range](https://docs.gitguardian.com/ggshield-docs/reference/secret/scan/commit-range)
@@ -64,7 +86,7 @@ Only exit **0 / CLEAN** means a successful scanner run. Other outcomes block:
 | 2 | Invalid gate arguments |
 | 3 | Authentication failed/unavailable; owner must restore approved native auth |
 | 4 | Scan/transport/server/timeout error, or HEAD/base changed between initial resolution and final verification |
-| 10 | Skipped: empty range or deletion-only input; no clean scan claimed |
+| 10 | Skipped: no outgoing commits or tag annotations, or deletion-only input; no clean scan claimed |
 | 20 | Invalid/unavailable base, Git operation, history or hook input |
 | 21 | Missing/untrusted executable, unsupported Python, or unverifiable/unsupported ggshield version |
 
@@ -187,3 +209,14 @@ value; it is never removed to select a different credential context. An empty
 SSH_ASKPASS still blocks with exit 20 under this gate's explicit SSH-selector
 contract. Other explicit selectors require approved external absolute
 paths. Do not alter authentication selectors merely to obtain a clean scan.
+
+The caller-selected temporary root is resolved before the private directory is
+created, so cleanup uses its physical parent even if the caller's temporary-root
+alias is later retargeted. Scanner-provided receipt paths are still validated
+lexically and are never resolved or opened. Replacement of physical parent
+directories remains outside the isolation guarantee.
+
+Windows batch scanner wrappers (`.cmd`/`.bat`) require an approved local temporary
+root. Configure `TMPDIR`/`TEMP`/`TMP` in the trusted caller environment; this gate does not
+configure network drive mappings or UNC command-shell behavior. A scanner error
+blocks publication rather than reporting a clean scan.
