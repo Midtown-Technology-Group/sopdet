@@ -16,7 +16,7 @@ func TestBuildDelta(t *testing.T) {
 			{"key": "2", "v": "b"},
 		}, ts),
 	}
-	snap := Snapshot("scan-1", ts, "test", schema.FingerprintAlgo, prev)
+	snap := Snapshot("scan-1", ts, "test", schema.FingerprintAlgo, LocalTarget, prev)
 
 	cur := map[string]*schema.EntityCollection{
 		"software": schema.BuildEntity([]schema.Record{
@@ -47,7 +47,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	entities := map[string]*schema.EntityCollection{
 		"os": schema.BuildEntity([]schema.Record{{"key": "os", "name": "X"}}, ts),
 	}
-	s := Snapshot("scan-9", ts, "test", schema.FingerprintAlgo, entities)
+	s := Snapshot("scan-9", ts, "test", schema.FingerprintAlgo, LocalTarget, entities)
 	if err := Save(path, s); err != nil {
 		t.Fatal(err)
 	}
@@ -57,5 +57,55 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 	if got.ScanID != "scan-9" || got.AsMaps()["os"]["os"] != s.AsMaps()["os"]["os"] {
 		t.Fatalf("mismatch: %+v", got)
+	}
+}
+
+func TestTargetIDIsExactAndHidesEndpoint(t *testing.T) {
+	const ep = "https://bifrost.example.test/api/endpoints/00000000-0000-4000-8000-000000000001"
+	if got := TargetID(""); got != LocalTarget {
+		t.Fatalf("empty endpoint = %q, want %q", got, LocalTarget)
+	}
+	a := TargetID(ep)
+	if a != TargetID(ep) {
+		t.Fatal("the same endpoint produced different targets")
+	}
+	// Exact, like the ingest spool scope: an equivalent spelling is another
+	// target, so its baseline never outruns chunks spooled under the first.
+	for _, other := range []string{ep + "/", " " + ep, ep + "x"} {
+		if TargetID(other) == a {
+			t.Fatalf("%q shares a target with %q", other, ep)
+		}
+	}
+	if a == LocalTarget {
+		t.Fatal("distinct endpoints share a target")
+	}
+	if len(a) != len("sha256:")+64 || a[:7] != "sha256:" {
+		t.Fatalf("target %q is not a sha256 digest", a)
+	}
+}
+
+func TestBaselineForOnlyMatchesItsTarget(t *testing.T) {
+	entities := map[string]*schema.EntityCollection{
+		"os": schema.BuildEntity([]schema.Record{{"key": "os", "name": "X"}}, ts),
+	}
+	a := TargetID("https://bifrost.example.test/api/endpoints/a")
+	b := TargetID("https://bifrost.example.test/api/endpoints/b")
+	s := Snapshot("scan-1", ts, "test", schema.FingerprintAlgo, a, entities)
+	if s.BaselineFor(a) == nil {
+		t.Fatal("baseline not used for the target it was delivered to")
+	}
+	for name, target := range map[string]string{"other endpoint": b, "local run": LocalTarget} {
+		if s.BaselineFor(target) != nil {
+			t.Fatalf("%s reused a baseline delivered elsewhere", name)
+		}
+	}
+	legacy := *s
+	legacy.Target = ""
+	if legacy.BaselineFor(a) != nil || legacy.BaselineFor(LocalTarget) != nil {
+		t.Fatal("state without a recorded target was trusted as a baseline")
+	}
+	var none *State
+	if none.BaselineFor(a) != nil {
+		t.Fatal("nil state produced a baseline")
 	}
 }

@@ -82,17 +82,25 @@ func Run(ctx context.Context, cfg config.Config, agentVersion string, rep *progr
 	if statePath == "" {
 		statePath = filepath.Join(defaultStateDir(), "state.json")
 	}
+	posting := cfg.Endpoint != "" && !cfg.DryRun
+	target := state.LocalTarget
+	if posting {
+		target = state.TargetID(cfg.Endpoint)
+	}
 	if cfg.Delta {
 		st, err := state.Load(statePath)
 		if err != nil {
 			return Result{}, err
 		}
-		if st != nil && len(st.AsMaps()) > 0 {
+		// A baseline recorded for another target (a different endpoint, a dry
+		// run, or an older state file) says nothing about what this target
+		// holds, so send a full snapshot instead of a delta against it.
+		if prev := st.BaselineFor(target); prev != nil {
 			if st.ScanID != "" {
 				base = &st.ScanID
 			}
 			action = schema.ActionDelta
-			outEntities = deltaToAny(state.BuildDelta(entities, st.AsMaps()))
+			outEntities = deltaToAny(state.BuildDelta(entities, prev))
 		}
 	}
 
@@ -136,7 +144,7 @@ func Run(ctx context.Context, cfg config.Config, agentVersion string, rep *progr
 
 	res := Result{Envelope: env, Summarized: summarized}
 
-	if cfg.Endpoint != "" && !cfg.DryRun {
+	if posting {
 		ir, err := ingest.Send(env, ingest.Options{
 			Endpoint:   cfg.Endpoint,
 			APIKey:     cfg.APIKey,
@@ -187,7 +195,7 @@ func Run(ctx context.Context, cfg config.Config, agentVersion string, rep *progr
 	})
 
 	if res.Delivered && !summarized {
-		snap := state.Snapshot(scanID, env.CalendarTime, env.Agent.Version, schema.FingerprintAlgo, entities)
+		snap := state.Snapshot(scanID, env.CalendarTime, env.Agent.Version, schema.FingerprintAlgo, target, entities)
 		if err := state.Save(statePath, snap); err != nil {
 			return res, err
 		}

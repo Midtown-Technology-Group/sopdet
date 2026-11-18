@@ -74,7 +74,7 @@ code 3.
 | `-endpoint` / `SOPDET_API_KEY` | Bifrost ingest endpoint and key (key via environment or protected config file) |
 | `-out` | write the envelope to a file |
 | `-compress` | gzip+base64 the payload |
-| `-delta` | send only changes after a baseline snapshot |
+| `-delta` | send only changes since the last scan delivered to the same endpoint; otherwise a full snapshot |
 | `-dry-run` | collect only; never post |
 | `-proxy`, `-state` | proxy URL, delta state file |
 | `-include-appx`, `-include-processes` | extra entities |
@@ -183,6 +183,10 @@ One envelope per scan. Every entity record carries a stable `key`, a content
 `entity_errors` (with `gated: true` for access-denied) rather than guessed. See
 [`schema/inventory.schema.json`](schema/inventory.schema.json) and
 [`WHAT-IT-COLLECTS.md`](WHAT-IT-COLLECTS.md).
+
+A delta baseline belongs to the endpoint it was delivered to. A changed
+endpoint, a dry run, or a state file from an earlier version makes the next
+delivery a full snapshot.
 
 Modes: `action=snapshot` (full), `action=delta` (added/changed/removed after a
 baseline), per-entity transport chunks (`chunk`), and `-MaxPayloadBytes` size

@@ -17,6 +17,14 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
   with code 3 and lists the unconfirmed chunks. The ingest workflow must use
   sync execution for delivery to be confirmed.
 
+- A delta baseline is now tied to the endpoint it was delivered to. A run that
+  delivers somewhere else, including a new endpoint, sends a full snapshot
+  instead of a delta against inventory that endpoint never received. Dry runs
+  no longer leave a baseline that a later real run would diff against. State
+  files written by earlier versions record no endpoint, so the first scan after
+  upgrading is a full snapshot. Applies to the Go agent and the PowerShell
+  collector.
+
 ### Security
 
 - Platform collectors now surface access, execution, parse, and file failures

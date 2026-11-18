@@ -2,6 +2,8 @@
 package state
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -11,12 +13,44 @@ import (
 
 // State is the last-known fingerprint set for a device.
 type State struct {
-	SchemaVersion   int                          `json:"schema_version"`
-	ScanID          string                       `json:"scan_id"`
-	ObservedAt      string                       `json:"observed_at"`
-	Agent           string                       `json:"agent,omitempty"`
-	FingerprintAlgo string                       `json:"fingerprint_algo"`
-	Entities        map[string]map[string]string `json:"entities"`
+	SchemaVersion   int    `json:"schema_version"`
+	ScanID          string `json:"scan_id"`
+	ObservedAt      string `json:"observed_at"`
+	Agent           string `json:"agent,omitempty"`
+	FingerprintAlgo string `json:"fingerprint_algo"`
+	// Target identifies where this baseline was delivered (see TargetID). A
+	// baseline only describes what that target holds, so a delta is built from
+	// it only when the run delivers to the same target.
+	Target   string                       `json:"target,omitempty"`
+	Entities map[string]map[string]string `json:"entities"`
+}
+
+// LocalTarget is the target of a run that delivers nowhere: dry runs and
+// file or stdout output.
+const LocalTarget = "local"
+
+// TargetID names the delivery target of a run. An empty endpoint means the run
+// does not post. The endpoint is taken exactly as given, as the ingest spool
+// scope takes it: a baseline and the chunks still spooled for that endpoint
+// must share one identity, or a stale spooled delta could replay after a newer
+// delivery recorded under an equivalent spelling. Endpoints are compared by a
+// hash so the state file carries no URL.
+func TargetID(endpoint string) string {
+	if endpoint == "" {
+		return LocalTarget
+	}
+	sum := sha256.Sum256([]byte(endpoint))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// BaselineFor returns the fingerprint maps to diff against when delivering to
+// target, or nil when the state was recorded for a different target, including
+// state written before targets were recorded.
+func (s *State) BaselineFor(target string) map[string]map[string]string {
+	if s == nil || s.Target != target || len(s.Entities) == 0 {
+		return nil
+	}
+	return s.Entities
 }
 
 // Load reads state, returning nil (no error) when the file is absent or empty.
@@ -107,7 +141,7 @@ func BuildDelta(entities map[string]*schema.EntityCollection, prev map[string]ma
 }
 
 // Snapshot produces a State from built collections.
-func Snapshot(scanID, observedAt, agent, algo string, entities map[string]*schema.EntityCollection) *State {
+func Snapshot(scanID, observedAt, agent, algo, target string, entities map[string]*schema.EntityCollection) *State {
 	maps := make(map[string]map[string]string, len(entities))
 	for name, coll := range entities {
 		m := make(map[string]string, len(coll.Records))
@@ -124,6 +158,7 @@ func Snapshot(scanID, observedAt, agent, algo string, entities map[string]*schem
 		ObservedAt:      observedAt,
 		Agent:           agent,
 		FingerprintAlgo: algo,
+		Target:          target,
 		Entities:        maps,
 	}
 }

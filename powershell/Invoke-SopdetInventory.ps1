@@ -215,14 +215,37 @@ function Convert-StateToMap($State) {
     return $maps
 }
 
-function Get-StateObject([string]$ScanId) {
+# Names where a delta baseline was delivered: 'local' for a run that posts
+# nowhere, otherwise a hash of the endpoint so the state file carries no URL.
+# The URL is taken exactly as given, like Get-SpoolScope, so a baseline never
+# outruns chunks still spooled for an equivalent spelling of the endpoint.
+function Get-DeliveryTarget([string]$Url) {
+    $e = [string]$Url
+    if (-not $e) { return 'local' }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($e))
+    } finally { $sha.Dispose() }
+    return ('sha256:' + (($hash | ForEach-Object { $_.ToString('x2') }) -join ''))
+}
+
+# A baseline describes only what its target holds. State recorded for another
+# endpoint, a dry run, or before targets were recorded yields no baseline.
+function Test-BaselineTarget($State, [string]$Target) {
+    if ($null -eq $State) { return $false }
+    $recorded = $null
+    try { $recorded = [string]$State.target } catch { Write-Verbose "ignored: $_" }
+    return ($recorded -ceq $Target)
+}
+
+function Get-StateObject([string]$ScanId, [string]$Target) {
     $ents = [ordered]@{}
     foreach ($n in $script:Entities.Keys) {
         $m = [ordered]@{}
         foreach ($r in $script:Entities[$n].records) { $m[$r.key] = $r.fingerprint }
         $ents[$n] = $m
     }
-    return [ordered]@{ schema_version = $SchemaVersion; scan_id = $ScanId; observed_at = $script:NowIso; entities = $ents }
+    return [ordered]@{ schema_version = $SchemaVersion; scan_id = $ScanId; observed_at = $script:NowIso; target = $Target; entities = $ents }
 }
 
 function Get-DeltaEntity($PrevMaps) {
@@ -2036,9 +2059,13 @@ $script:Summarized = $false
 $action = 'snapshot'
 $baseScanId = $null
 $statePath = Resolve-StatePath $StatePath
+$posting = [bool]$Endpoint -and -not $DryRun
+$deliveryTarget = 'local'
+if ($posting) { $deliveryTarget = Get-DeliveryTarget $Endpoint }
 if ($Delta) {
     $prevState = Read-JsonFile $statePath
-    $prevMaps = Convert-StateToMap $prevState
+    $prevMaps = @{}
+    if (Test-BaselineTarget $prevState $deliveryTarget) { $prevMaps = Convert-StateToMap $prevState }
     if ($prevMaps.Count -gt 0) {
         if ($prevState -and $prevState.scan_id) { $baseScanId = [string]$prevState.scan_id }
         $script:OutEntities = Get-DeltaEntity $prevMaps
@@ -2102,7 +2129,7 @@ $header = New-Object System.Collections.Specialized.OrderedDictionary
 foreach ($k in $envelope.Keys) { if ($k -ne 'entities') { $header.Add($k, $envelope[$k]) } }
 
 $delivered = $false
-if ($DryRun -or -not $Endpoint) {
+if (-not $posting) {
     if ($Compress -or $Compact) { Write-Output $jsonWire } else { Write-Output $jsonPretty }
     $delivered = $true
 } else {
@@ -2122,7 +2149,7 @@ if ($DryRun -or -not $Endpoint) {
 
 if ($delivered -and -not $script:Summarized) {
     try {
-        $stateObj = Get-StateObject $envelope.scan_id
+        $stateObj = Get-StateObject $envelope.scan_id $deliveryTarget
         Write-Utf8 -Path $statePath -Text ($stateObj | ConvertTo-Json -Depth 24 -Compress)
     } catch { Write-Verbose "ignored: $_" }
 }
