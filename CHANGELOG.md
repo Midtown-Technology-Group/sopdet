@@ -45,6 +45,11 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
   upgrading is a full snapshot. Applies to the Go agent and the PowerShell
   collector.
 
+### Development
+
+- Add a fail-closed ggshield commit-history gate before local pushes and PRs.
+
+
 ### Security
 
 - Signing and App Control runbooks use protected environment variables and
