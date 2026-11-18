@@ -5,6 +5,8 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-18
+
 ### Fixed
 
 - Windows artifact signing now resolves each setting from explicit parameters,
