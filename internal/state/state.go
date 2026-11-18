@@ -11,12 +11,31 @@ import (
 
 // State is the last-known fingerprint set for a device.
 type State struct {
-	SchemaVersion   int                          `json:"schema_version"`
-	ScanID          string                       `json:"scan_id"`
-	ObservedAt      string                       `json:"observed_at"`
-	Agent           string                       `json:"agent,omitempty"`
-	FingerprintAlgo string                       `json:"fingerprint_algo"`
-	Entities        map[string]map[string]string `json:"entities"`
+	SchemaVersion   int    `json:"schema_version"`
+	ScanID          string `json:"scan_id"`
+	ObservedAt      string `json:"observed_at"`
+	Agent           string `json:"agent,omitempty"`
+	FingerprintAlgo string `json:"fingerprint_algo"`
+	// Target identifies where this baseline was delivered: LocalTarget, or
+	// the ingest spool scope of the endpoint and credential. A baseline only
+	// describes what that target holds, so a delta is built from it only when
+	// the run delivers to the same target.
+	Target   string                       `json:"target,omitempty"`
+	Entities map[string]map[string]string `json:"entities"`
+}
+
+// LocalTarget is the target of a run that delivers nowhere: dry runs and
+// file or stdout output.
+const LocalTarget = "local"
+
+// BaselineFor returns the fingerprint maps to diff against when delivering to
+// target, or nil when the state was recorded for a different target, including
+// state written before targets were recorded.
+func (s *State) BaselineFor(target string) map[string]map[string]string {
+	if s == nil || s.Target != target || len(s.Entities) == 0 {
+		return nil
+	}
+	return s.Entities
 }
 
 // Load reads state, returning nil (no error) when the file is absent or empty.
@@ -39,6 +58,17 @@ func Load(path string) (*State, error) {
 		return nil, err
 	}
 	return &s, nil
+}
+
+// Remove deletes the state file; an absent file is not an error.
+func Remove(path string) error {
+	if path == "" {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // Save writes state atomically.
@@ -107,7 +137,7 @@ func BuildDelta(entities map[string]*schema.EntityCollection, prev map[string]ma
 }
 
 // Snapshot produces a State from built collections.
-func Snapshot(scanID, observedAt, agent, algo string, entities map[string]*schema.EntityCollection) *State {
+func Snapshot(scanID, observedAt, agent, algo, target string, entities map[string]*schema.EntityCollection) *State {
 	maps := make(map[string]map[string]string, len(entities))
 	for name, coll := range entities {
 		m := make(map[string]string, len(coll.Records))
@@ -124,6 +154,7 @@ func Snapshot(scanID, observedAt, agent, algo string, entities map[string]*schem
 		ObservedAt:      observedAt,
 		Agent:           agent,
 		FingerprintAlgo: algo,
+		Target:          target,
 		Entities:        maps,
 	}
 }

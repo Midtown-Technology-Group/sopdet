@@ -118,6 +118,7 @@ func (w *WSHintClient) dial(ctx context.Context) (*websocket.Conn, error) {
 	}
 	conn, resp, err := websocket.Dial(ctx, w.wsURL, &websocket.DialOptions{
 		HTTPHeader: header,
+		HTTPClient: credentialHTTPClient(nil),
 	})
 	if err != nil {
 		if resp != nil {

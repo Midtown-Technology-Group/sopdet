@@ -90,9 +90,8 @@ func PrepareServe(
 	}
 
 	return DeviceState{}, fmt.Errorf(
-		"refusing to serve: no device key (set -device-key or SOPDET_DEVICE_KEY), "+
-			"no persisted key at %s, and no enrollment token (-enroll-token / "+
-			"SOPDET_ENROLLMENT_TOKEN)",
+		"refusing to serve: no device key (set SOPDET_DEVICE_KEY), "+
+			"no persisted key at %s, and no enrollment token (SOPDET_ENROLLMENT_TOKEN)",
 		cfg.StatePath,
 	)
 }

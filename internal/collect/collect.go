@@ -39,10 +39,13 @@ type Collector interface {
 
 // Run executes every collector at or below the requested level.
 func Run(ctx context.Context, level int, s *Session) (map[string]*schema.EntityCollection, map[string]schema.EntityError) {
+	return runPlan(ctx, planCollectors(level, s), s)
+}
+
+func runPlan(ctx context.Context, plan []Collector, s *Session) (map[string]*schema.EntityCollection, map[string]schema.EntityError) {
 	entities := map[string]*schema.EntityCollection{}
 	errs := map[string]schema.EntityError{}
 
-	plan := planCollectors(level, s)
 	s.emit(progress.Event{Kind: progress.KindPlan, Total: len(plan)})
 
 	for i, c := range plan {
@@ -66,22 +69,26 @@ func Run(ctx context.Context, level int, s *Session) (map[string]*schema.EntityC
 				Ms:      time.Since(start).Milliseconds(),
 				Message: err.Error(),
 			})
-			continue
+			if len(recs) == 0 {
+				continue
+			}
 		}
 		if len(recs) > s.MaxListItems && s.MaxListItems > 0 {
 			recs = recs[:s.MaxListItems]
 		}
 		entities[c.Name()] = schema.BuildEntity(recs, time.Now().UTC().Format("2006-01-02T15:04:05.0000000Z"))
-		s.emit(progress.Event{
-			Kind:   progress.KindEntity,
-			Entity: c.Name(),
-			Level:  c.Level(),
-			Index:  i + 1,
-			Total:  len(plan),
-			OK:     progress.Bool(true),
-			Count:  len(recs),
-			Ms:     time.Since(start).Milliseconds(),
-		})
+		if err == nil {
+			s.emit(progress.Event{
+				Kind:   progress.KindEntity,
+				Entity: c.Name(),
+				Level:  c.Level(),
+				Index:  i + 1,
+				Total:  len(plan),
+				OK:     progress.Bool(true),
+				Count:  len(recs),
+				Ms:     time.Since(start).Milliseconds(),
+			})
+		}
 	}
 	return entities, errs
 }
@@ -117,7 +124,7 @@ func runCollector(c Collector, ctx context.Context, s *Session) (recs []schema.R
 
 func looksGated(msg string) bool {
 	m := strings.ToLower(msg)
-	for _, s := range []string{"access is denied", "access denied", "not authorized", "not allowed", "privilege", "requires elevation", "0x80070005"} {
+	for _, s := range []string{"access is denied", "access denied", "permission denied", "operation not permitted", "not authorized", "not allowed", "privilege", "requires elevation", "0x80070005"} {
 		if strings.Contains(m, s) {
 			return true
 		}
