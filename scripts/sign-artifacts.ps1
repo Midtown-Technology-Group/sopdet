@@ -5,7 +5,8 @@
 .DESCRIPTION
   Copies each input file to -OutDir, signs it through Azure Artifact Signing using
   the signtool dlib interface, then verifies the signature. Configuration comes from
-  scripts/artifact-signing.env or explicit parameters.
+  explicit parameters, environment variables, then scripts/artifact-signing.env
+  (in that order, independently for each setting).
 
 .PARAMETER Profile
   Public or Private Trust certificate profile.
@@ -21,6 +22,9 @@
 
 .EXAMPLE
   ./scripts/sign-artifacts.ps1 -Profile Public -File bin/sopdet-windows-amd64.exe -OutDir dist/signed-public
+
+.EXAMPLE
+  ./scripts/sign-artifacts.ps1 -Profile Private -File bin/sopdet-windows-amd64.exe,bin/sopdet-windows-arm64.exe -OutDir dist/signed-private
 #>
 [CmdletBinding()]
 param(
@@ -34,30 +38,38 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutDir,
 
-    [string]$Endpoint = $env:ARTIFACT_SIGNING_ENDPOINT,
-    [string]$AccountName = $env:ARTIFACT_SIGNING_ACCOUNT,
+    [string]$Endpoint,
+    [string]$AccountName,
     [string]$CertificateProfileName,
-    [string]$DlibPath = $env:ARTIFACT_SIGNING_DLIB_PATH,
+    [string]$DlibPath,
     [string]$SignToolPath
 )
 
 $ErrorActionPreference = 'Stop'
 
 $envFile = Join-Path $PSScriptRoot 'artifact-signing.env'
+$envConfig = @{}
 if (Test-Path $envFile) {
     Get-Content $envFile | Where-Object { $_ -match '^[A-Z].*=' } | ForEach-Object {
         $name, $value = $_ -split '=', 2
-        Set-Variable -Name $name.Trim() -Value $value.Trim() -Scope Script
+        $envConfig[$name.Trim()] = $value.Trim()
     }
 }
 
-if (-not $CertificateProfileName) {
-    $CertificateProfileName = if ($Profile -eq 'Public') {
-        $script:ARTIFACT_SIGNING_CERT_PROFILE_PUBLIC
-    } else {
-        $script:ARTIFACT_SIGNING_CERT_PROFILE_PRIVATE
-    }
+function Resolve-SigningSetting {
+    param([string]$Value, [string]$Name)
+
+    if ($Value) { return $Value }
+    $environmentValue = [Environment]::GetEnvironmentVariable($Name)
+    if ($environmentValue) { return $environmentValue }
+    return $envConfig[$Name]
 }
+
+$Endpoint = Resolve-SigningSetting -Value $Endpoint -Name 'ARTIFACT_SIGNING_ENDPOINT'
+$AccountName = Resolve-SigningSetting -Value $AccountName -Name 'ARTIFACT_SIGNING_ACCOUNT'
+$DlibPath = Resolve-SigningSetting -Value $DlibPath -Name 'ARTIFACT_SIGNING_DLIB_PATH'
+$profileSetting = if ($Profile -eq 'Public') { 'ARTIFACT_SIGNING_CERT_PROFILE_PUBLIC' } else { 'ARTIFACT_SIGNING_CERT_PROFILE_PRIVATE' }
+$CertificateProfileName = Resolve-SigningSetting -Value $CertificateProfileName -Name $profileSetting
 
 if (-not $Endpoint -or -not $AccountName -or -not $CertificateProfileName -or -not $DlibPath) {
     throw 'Missing Artifact Signing configuration (endpoint, account, certificate profile, dlib).'

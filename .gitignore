@@ -11,5 +11,6 @@ powershell/last-run.json
 powershell/last-run.log
 powershell/results/
 coverage.out
+signing-coverage.xml
 .sonar-coverage/
 .scannerwork/

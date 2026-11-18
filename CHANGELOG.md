@@ -7,6 +7,12 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ### Fixed
 
+- Windows artifact signing now resolves each setting from explicit parameters,
+  environment variables, then the local envfile, including both trust profiles.
+  Release and Make signing commands pass both Windows binaries as one array.
+- Signing runbook uses separate Public and Private identity validation IDs for
+  their matching certificate profiles.
+
 - Serve mode now sweeps stale per-job script staging files
   (`sopdet-job-*.ps1` in the configured work dir) once at startup, covering
   leftovers from crashes/kills/power loss that the per-run cleanup cannot
