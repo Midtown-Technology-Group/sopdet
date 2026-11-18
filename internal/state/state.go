@@ -29,17 +29,19 @@ type State struct {
 // file or stdout output.
 const LocalTarget = "local"
 
-// TargetID names the delivery target of a run. An empty endpoint means the run
-// does not post. The endpoint is taken exactly as given, as the ingest spool
-// scope takes it: a baseline and the chunks still spooled for that endpoint
-// must share one identity, or a stale spooled delta could replay after a newer
-// delivery recorded under an equivalent spelling. Endpoints are compared by a
-// hash so the state file carries no URL.
-func TargetID(endpoint string) string {
+// TargetID names the delivery target of a run: the endpoint and API key exactly
+// as given, the same pair the ingest spool scope uses. An empty endpoint means
+// the run does not post. A baseline and the chunks still spooled for it must
+// share one identity; otherwise a stale spooled delta could replay after a newer
+// delivery recorded under another spelling of the endpoint or another key, and
+// leave the receiver behind the saved baseline. Changing either one therefore
+// starts from a full snapshot. The pair is hashed so the state file carries
+// neither the URL nor the key.
+func TargetID(endpoint, apiKey string) string {
 	if endpoint == "" {
 		return LocalTarget
 	}
-	sum := sha256.Sum256([]byte(endpoint))
+	sum := sha256.Sum256([]byte(endpoint + "\x00" + apiKey))
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 

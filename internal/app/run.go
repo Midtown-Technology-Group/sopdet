@@ -85,7 +85,7 @@ func Run(ctx context.Context, cfg config.Config, agentVersion string, rep *progr
 	posting := cfg.Endpoint != "" && !cfg.DryRun
 	target := state.LocalTarget
 	if posting {
-		target = state.TargetID(cfg.Endpoint)
+		target = state.TargetID(cfg.Endpoint, cfg.APIKey)
 	}
 	if cfg.Delta {
 		st, err := state.Load(statePath)

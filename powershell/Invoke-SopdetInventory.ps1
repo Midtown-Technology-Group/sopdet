@@ -216,15 +216,16 @@ function Convert-StateToMap($State) {
 }
 
 # Names where a delta baseline was delivered: 'local' for a run that posts
-# nowhere, otherwise a hash of the endpoint so the state file carries no URL.
-# The URL is taken exactly as given, like Get-SpoolScope, so a baseline never
-# outruns chunks still spooled for an equivalent spelling of the endpoint.
-function Get-DeliveryTarget([string]$Url) {
+# nowhere, otherwise a hash of the endpoint and API key exactly as given, the
+# same pair Get-SpoolScope uses. A baseline then never outruns chunks still
+# spooled under another spelling of the endpoint or another key; changing
+# either starts from a full snapshot. The state file holds neither value.
+function Get-DeliveryTarget([string]$Url, [string]$ApiKey) {
     $e = [string]$Url
     if (-not $e) { return 'local' }
     $sha = [Security.Cryptography.SHA256]::Create()
     try {
-        $hash = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($e))
+        $hash = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes("$e`0$ApiKey"))
     } finally { $sha.Dispose() }
     return ('sha256:' + (($hash | ForEach-Object { $_.ToString('x2') }) -join ''))
 }
@@ -2061,7 +2062,7 @@ $baseScanId = $null
 $statePath = Resolve-StatePath $StatePath
 $posting = [bool]$Endpoint -and -not $DryRun
 $deliveryTarget = 'local'
-if ($posting) { $deliveryTarget = Get-DeliveryTarget $Endpoint }
+if ($posting) { $deliveryTarget = Get-DeliveryTarget $Endpoint $ApiKey }
 if ($Delta) {
     $prevState = Read-JsonFile $statePath
     $prevMaps = @{}

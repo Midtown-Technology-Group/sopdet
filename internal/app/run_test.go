@@ -267,53 +267,62 @@ func TestDeltaBaselineIsBoundToDeliveryTarget(t *testing.T) {
 	expect(&recB, srvB.URL, "delta", "baseline rebuilt for this endpoint")
 }
 
-// A delta spooled for one spelling of an endpoint must not replay after a newer
-// delivery to another spelling and leave the receiver behind the saved
-// baseline. Baseline and spool share the exact endpoint, so the run that
-// drains the stale chunk sends a snapshot after it.
-func TestStaleSpoolForAnotherSpellingIsFollowedBySnapshot(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
-	t.Setenv("HOME", dir)
-	var rec actionRecorder
-	srv := rec.serve(t)
+// A delta spooled under one endpoint spelling or API key must not replay after
+// a newer delivery under another and leave the receiver behind the saved
+// baseline. Baseline and spool share the exact endpoint and key, so the run
+// that drains the stale chunk sends a snapshot after it.
+func TestStaleSpoolForAnotherIdentityIsFollowedBySnapshot(t *testing.T) {
+	cases := map[string]func(url string) (string, string){
+		"endpoint spelling": func(url string) (string, string) { return url + "/", "synthetic-key-a" },
+		"api key":           func(url string) (string, string) { return url, "synthetic-key-b" },
+	}
+	for name, other := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
+			t.Setenv("HOME", dir)
+			var rec actionRecorder
+			srv := rec.serve(t)
 
-	cfg := config.Defaults()
-	cfg.Profile = "minimal"
-	cfg.Delta = true
-	cfg.MaxRetries = 1
-	cfg.StatePath = filepath.Join(dir, "state.json")
-	run := func(endpoint string) Result {
-		t.Helper()
-		c := cfg
-		c.Endpoint = endpoint
-		res, err := Run(context.Background(), c, "test", nil)
-		if err != nil {
-			t.Fatalf("run: %v", err)
-		}
-		return res
-	}
+			cfg := config.Defaults()
+			cfg.Profile = "minimal"
+			cfg.Delta = true
+			cfg.MaxRetries = 1
+			cfg.StatePath = filepath.Join(dir, "state.json")
+			run := func(endpoint, key string) Result {
+				t.Helper()
+				c := cfg
+				c.Endpoint = endpoint
+				c.APIKey = key
+				res, err := Run(context.Background(), c, "test", nil)
+				if err != nil {
+					t.Fatalf("run: %v", err)
+				}
+				return res
+			}
 
-	if !run(srv.URL).Delivered {
-		t.Fatal("baseline run not delivered")
-	}
-	rec.down.Store(true)
-	if res := run(srv.URL); res.Delivered || res.Spooled == 0 {
-		t.Fatalf("outage did not spool: %+v", res)
-	}
-	rec.down.Store(false)
-	if !run(srv.URL + "/").Delivered {
-		t.Fatal("delivery to the other spelling failed")
-	}
+			if !run(srv.URL, "synthetic-key-a").Delivered {
+				t.Fatal("baseline run not delivered")
+			}
+			rec.down.Store(true)
+			if res := run(srv.URL, "synthetic-key-a"); res.Delivered || res.Spooled == 0 {
+				t.Fatalf("outage did not spool: %+v", res)
+			}
+			rec.down.Store(false)
+			if !run(other(srv.URL)).Delivered {
+				t.Fatal("delivery under the other identity failed")
+			}
 
-	from := rec.count()
-	if !run(srv.URL).Delivered {
-		t.Fatal("final run not delivered")
-	}
-	rec.mu.Lock()
-	got := append([]string(nil), rec.actions[from:]...)
-	rec.mu.Unlock()
-	if len(got) < 2 || got[0] != "delta" || got[len(got)-1] != "snapshot" {
-		t.Fatalf("final run sent %v; want the stale spooled delta, then a snapshot", got)
+			from := rec.count()
+			if !run(srv.URL, "synthetic-key-a").Delivered {
+				t.Fatal("final run not delivered")
+			}
+			rec.mu.Lock()
+			got := append([]string(nil), rec.actions[from:]...)
+			rec.mu.Unlock()
+			if len(got) < 2 || got[0] != "delta" || got[len(got)-1] != "snapshot" {
+				t.Fatalf("final run sent %v; want the stale spooled delta, then a snapshot", got)
+			}
+		})
 	}
 }
