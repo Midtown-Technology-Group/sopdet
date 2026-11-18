@@ -5,6 +5,16 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+### Development
+
+- The secret gate now scans annotated tags before they are pushed, instead of
+  refusing them. It scans the complete text of every tag object in the chain
+  (headers, message and signature) alongside the commit history, so a signed,
+  annotated release tag such as `v0.3.0` can be published. It also brings
+  sopdet's gate up to the current shared version: commit messages are scanned
+  too, every scanned document needs its own clean result, and commits with
+  merged tag annotations are refused.
+
 ## [0.3.0] - 2026-11-18
 
 ### Fixed
