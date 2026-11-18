@@ -1,6 +1,7 @@
 """Offline regression tests: real Git histories and a fake scanner, never an API."""
 
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -19,7 +20,19 @@ SPEC = importlib.util.spec_from_file_location("secret_gate", GATE)
 secret_gate = importlib.util.module_from_spec(SPEC)
 sys.modules["secret_gate"] = secret_gate
 SPEC.loader.exec_module(secret_gate)
-FAKE = """import json, os, subprocess, sys
+FAKE = """import hashlib, json, os, subprocess, sys
+def incidents(text):
+    found = []
+    for marker in ("synthetic-secret-marker", "second-unapproved-marker"):
+        if marker in text:
+            detector = os.environ.get("GATE_FINDING_DETECTOR", "Fixture")
+            found.append(dict(policy="Secrets detection",
+                type=detector if marker.startswith("synthetic") else "Fixture",
+                ignore_sha=hashlib.sha256(marker.encode()).hexdigest(),
+                total_occurrences=1, ignore_reason=None,
+                occurrences=[dict(line_start=1, line_end=1, type="password")]))
+    return found
+EXTRA = 1 if os.environ.get("GATE_FINDING_TOTALS") == "wrong" else 0
 sys.excepthook = lambda *_: os._exit(97)
 if sys.flags.optimize:
     raise RuntimeError("fixture requires enabled assertions")
@@ -57,9 +70,14 @@ if "path" in args:
     if "GATE_MESSAGE_CODE" in os.environ:
         print("sensitive-output-must-stay-private")
         sys.exit(int(os.environ["GATE_MESSAGE_CODE"]))
-    if any(
-        "synthetic-secret-marker" in f.read_text(encoding="utf-8") for f in files
-    ):
+    found = {f: incidents(f.read_text(encoding="utf-8")) for f in files}
+    if any(found.values()):
+        entries = [dict(filename=str(f), mode="FILE", incidents=i,
+            total_incidents=len(i), total_occurrences=len(i))
+            for f, i in found.items()]
+        total = sum(len(i) for i in found.values())
+        print(json.dumps(dict(type="path_scan", entities_with_incidents=entries,
+            total_incidents=total + EXTRA, total_occurrences=total)))
         sys.exit(1)
     entries = [dict(filename=str(f), mode="FILE", incidents=[],
         total_incidents=0, total_occurrences=0) for f in files]
@@ -89,11 +107,22 @@ with open(os.environ["GATE_CALLS"], "a", encoding="utf-8") as calls:
 if "GATE_CODE" in os.environ:
     print("sensitive-output-must-stay-private")
     sys.exit(int(os.environ["GATE_CODE"]))
+assert "--json" in args
 commits = subprocess.check_output(["git", "rev-list", revision], text=True)
+scans = []
 for sha in commits.splitlines():
     diff = subprocess.check_output(["git", "show", "--format=", sha], text=True)
-    if "synthetic-secret-marker" in diff:
-        sys.exit(1)
+    found = incidents(diff)
+    if found:
+        scans.append(dict(id=sha, type="commit", total_incidents=len(found),
+            total_occurrences=len(found), entities_with_incidents=[dict(
+                filename="file.txt", mode="MODIFY", incidents=found,
+                total_incidents=len(found), total_occurrences=len(found))]))
+if scans:
+    total = sum(scan["total_incidents"] for scan in scans)
+    print(json.dumps(dict(type="commit-range", scans=scans,
+        total_incidents=total + EXTRA, total_occurrences=total)))
+    sys.exit(1)
 if os.environ.get("GATE_SHALLOW_BOUNDARY"):
     (Path(os.environ["GIT_DIR"]) / "shallow").write_text(
         os.environ["GATE_SHALLOW_BOUNDARY"] + "\\n"
@@ -101,6 +130,8 @@ if os.environ.get("GATE_SHALLOW_BOUNDARY"):
 sys.exit(0)
 """
 
+MARKER_SHA = hashlib.sha256(b"synthetic-secret-marker").hexdigest()
+SECOND_SHA = hashlib.sha256(b"second-unapproved-marker").hexdigest()
 PYTHON_FLOOR_CASES = (((3, 10), 21), ((3, 11), 0), ((3, 12), 0))
 
 
@@ -1435,6 +1466,149 @@ class SecretGateTests(unittest.TestCase):
         self.assertEqual(self.message_scans(), [2])
         self.assertNotIn("sensitive-output-must-stay-private", result.stderr)
 
+    def approve(self, detector="Fixture", raw=None):
+        """Land a reviewed false-positive list on the remote default branch."""
+        entry = {
+            "ignore_sha": MARKER_SHA,
+            "detector": detector,
+            "reason": "Synthetic fixture false positive.",
+        }
+        content = (
+            raw
+            if raw is not None
+            else json.dumps({"version": 1, "false_positives": [entry]})
+        )
+        self.git("switch", "-q", "main")
+        (self.repo / secret_gate.APPROVALS_FILE).write_text(content)
+        self.git("add", secret_gate.APPROVALS_FILE)
+        self.git("commit", "-q", "-m", "approve", "--no-gpg-sign")
+        self.git("push", "-q", "origin", "main")
+        self.git("switch", "-q", "feature")
+
+    def test_reviewed_false_positive_on_destination_is_accepted(self):
+        """An approval merged on the destination lets that exact finding pass."""
+        self.approve()
+        self.commit("synthetic-secret-marker")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("APPROVED: 1 reviewed false positive(s)", result.stdout)
+        self.assertNotIn("synthetic-secret-marker", result.stdout + result.stderr)
+
+    def test_candidate_cannot_approve_its_own_finding(self):
+        """An approval that only exists in the outgoing commits is ignored."""
+        entry = {
+            "ignore_sha": MARKER_SHA,
+            "detector": "Fixture",
+            "reason": "Self-made.",
+        }
+        (self.repo / secret_gate.APPROVALS_FILE).write_text(
+            json.dumps({"version": 1, "false_positives": [entry]})
+        )
+        self.git("add", secret_gate.APPROVALS_FILE)
+        self.commit("synthetic-secret-marker")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(f"ignore_sha={MARKER_SHA}", result.stderr)
+
+    def test_false_positive_requires_matching_detector(self):
+        """The hash alone is not enough; the detector must match too."""
+        self.approve(detector="Other")
+        self.commit("synthetic-secret-marker")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(f"FINDING: Fixture ignore_sha={MARKER_SHA}", result.stderr)
+
+    def test_unapproved_finding_reports_only_metadata(self):
+        """Findings name detector, hash and location so they can be reviewed."""
+        self.commit("synthetic-secret-marker")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(f"ignore_sha={MARKER_SHA} at ", result.stderr)
+        self.assertIn(":file.txt line 1", result.stderr)
+        self.assertNotIn("synthetic-secret-marker", result.stdout + result.stderr)
+
+    def test_partially_approved_findings_block(self):
+        """One approved finding cannot carry an unapproved one."""
+        self.approve()
+        self.commit("synthetic-secret-marker\nsecond-unapproved-marker\n")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(f"ignore_sha={SECOND_SHA}", result.stderr)
+        self.assertNotIn(f"ignore_sha={MARKER_SHA}", result.stderr)
+
+    def test_inconsistent_finding_totals_block(self):
+        """A report whose totals disagree with its findings is not trusted."""
+        self.approve()
+        self.commit("synthetic-secret-marker")
+        self.env["GATE_FINDING_TOTALS"] = "wrong"
+        self.assertEqual(self.run_gate().returncode, 1)
+
+    def test_invalid_false_positive_list_blocks(self):
+        """A malformed reviewed list blocks instead of approving anything."""
+        good = {
+            "ignore_sha": MARKER_SHA,
+            "detector": "Fixture",
+            "reason": "Synthetic.x",
+        }
+        cases = {
+            "not json": "{",
+            "wrong version": json.dumps({"version": 2, "false_positives": [good]}),
+            "extra field": json.dumps(
+                {"version": 1, "false_positives": [dict(good, path="x")]}
+            ),
+            "short reason": json.dumps(
+                {"version": 1, "false_positives": [dict(good, reason="fp")]}
+            ),
+            "bad hash": json.dumps(
+                {"version": 1, "false_positives": [dict(good, ignore_sha="ab")]}
+            ),
+            "duplicate": json.dumps({"version": 1, "false_positives": [good, good]}),
+        }
+        self.commit("synthetic-secret-marker")
+        for name, raw in cases.items():
+            with self.subTest(name):
+                self.approve(raw=raw)
+                self.assertEqual(self.run_gate().returncode, 20)
+
+    def test_approved_false_positive_in_message_and_annotation(self):
+        """Approvals apply to commit history, messages and tag annotations alike."""
+        self.approve()
+        self.commit("synthetic-secret-marker")
+        self.git(
+            "commit",
+            "-q",
+            "--allow-empty",
+            "--no-gpg-sign",
+            "-m",
+            "synthetic-secret-marker",
+        )
+        self.git("tag", "-a", "-m", "synthetic-secret-marker", "release")
+        result = self.push_tag("release")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count("APPROVED:"), 3)
+        self.assertIn("1 tag annotation(s)", result.stdout)
+
+    def test_clean_scan_does_not_need_the_destination(self):
+        """Approvals are read only after a finding; clean pushes stay offline."""
+        self.git("remote", "remove", "origin")
+        head = self.git("rev-parse", "HEAD")
+        result = self.run_gate(
+            "--pre-push",
+            input_text=f"refs/heads/x {head} refs/heads/x {'0' * 40}\n",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_findings_without_a_destination_stay_blocked(self):
+        """No reachable reviewed list means no approvals."""
+        self.commit("synthetic-secret-marker")
+        self.git("remote", "remove", "origin")
+        head = self.git("rev-parse", "HEAD")
+        result = self.run_gate(
+            "--pre-push",
+            input_text=f"refs/heads/x {head} refs/heads/x {'0' * 40}\n",
+        )
+        self.assertEqual(result.returncode, 1, result.stderr)
+
     def test_valid_equal_base_ref_is_supported(self):
         """Accept an equal sign in the explicit destination without shell parsing."""
         self.git("branch", "fix=api", self.base)
@@ -1471,7 +1645,9 @@ class SecretGateTests(unittest.TestCase):
             patch("secret_gate.scan", return_value=0) as scanner,
         ):
             self.assertEqual(secret_gate.main(["--all-history"]), 4)
-            scanner.assert_called_once_with([(self.head, 1)], "tool", [])
+            scanner.assert_called_once()
+            self.assertEqual(scanner.call_args.args[:3], ([(self.head, 1)], "tool", []))
+            self.assertTrue(callable(scanner.call_args.args[3]))
 
     def test_explicit_release_base_includes_default_branch_history(self):
         """A release PR must scan commits already present on the default branch."""
