@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -14,6 +15,9 @@ import (
 
 	"github.com/Midtown-Technology-Group/sopdet/internal/schema"
 )
+
+var errNoProfilerData = errors.New("system_profiler returned no data")
+var collectorRunCommand = runCommand
 
 // PlatformIdentity reads the hardware UUID from ioreg on macOS.
 func PlatformIdentity() (machineGUID, hardwareUUID *string, elevated bool) {
@@ -53,7 +57,7 @@ func PlatformCollectors(_ *Session) []Collector {
 }
 
 func systemProfiler(dataType string) ([]map[string]any, error) {
-	out, err := runCommand("system_profiler", "-json", dataType)
+	out, err := collectorRunCommand("system_profiler", "-json", dataType)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +67,7 @@ func systemProfiler(dataType string) ([]map[string]any, error) {
 	}
 	items, ok := doc[dataType]
 	if !ok || len(items) == 0 {
-		return nil, fmt.Errorf("no %s data", dataType)
+		return nil, fmt.Errorf("%w for %s", errNoProfilerData, dataType)
 	}
 	return items, nil
 }
@@ -187,7 +191,7 @@ func (macSoftwareCollector) Level() int   { return levelQuick }
 func (macSoftwareCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
 	items, err := systemProfiler("SPApplicationsDataType")
 	if err != nil {
-		return []schema.Record{}, nil
+		return nil, err
 	}
 	out := []schema.Record{}
 	for _, app := range items {
@@ -212,7 +216,7 @@ func (macGraphicsCollector) Level() int   { return levelQuick }
 func (macGraphicsCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
 	items, err := systemProfiler("SPDisplaysDataType")
 	if err != nil {
-		return []schema.Record{}, nil
+		return nil, err
 	}
 	out := []schema.Record{}
 	for i, gpu := range items {
@@ -234,8 +238,11 @@ func (macTPMCollector) Name() string { return "tpm" }
 func (macTPMCollector) Level() int   { return levelQuick }
 func (macTPMCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
 	items, err := systemProfiler("SPiBridgeDataType")
-	if err != nil || len(items) == 0 {
+	if errors.Is(err, errNoProfilerData) {
 		return []schema.Record{}, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 	rec := schema.Record{"key": "tpm", "present": true, "source": "ibridge"}
 	for _, key := range []string{"ibridge_model", "ibridge_firmware_version", "ibridge_boot_uuid"} {
@@ -252,7 +259,8 @@ func (macLocalUserCollector) Name() string { return "local_users" }
 func (macLocalUserCollector) Level() int   { return levelQuick }
 func (macLocalUserCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
 	out := []schema.Record{}
-	if raw, err := runCommand("dscl", ".", "-list", "/Users", "UniqueID"); err == nil {
+	raw, directoryErr := collectorRunCommand("dscl", ".", "-list", "/Users", "UniqueID")
+	if directoryErr == nil {
 		for _, line := range strings.Split(raw, "\n") {
 			fields := strings.Fields(line)
 			if len(fields) < 2 {
@@ -271,7 +279,7 @@ func (macLocalUserCollector) Collect(_ context.Context, _ *Session) ([]schema.Re
 	}
 	f, err := os.Open("/etc/passwd")
 	if err != nil {
-		return out, nil
+		return nil, errors.Join(fmt.Errorf("dscl users: %w", directoryErr), fmt.Errorf("read /etc/passwd fallback: %w", err))
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
@@ -285,7 +293,7 @@ func (macLocalUserCollector) Collect(_ context.Context, _ *Session) ([]schema.Re
 			"full_name": parts[4], "home": parts[5], "shell": parts[6], "account_type": "local",
 		})
 	}
-	return out, sc.Err()
+	return out, errors.Join(fmt.Errorf("dscl users: %w", directoryErr), sc.Err())
 }
 
 type macListeningPortCollector struct{}
@@ -293,9 +301,9 @@ type macListeningPortCollector struct{}
 func (macListeningPortCollector) Name() string { return "listening_ports" }
 func (macListeningPortCollector) Level() int   { return levelFull }
 func (macListeningPortCollector) Collect(_ context.Context, _ *Session) ([]schema.Record, error) {
-	raw, err := runCommand("lsof", "-nP", "-iTCP", "-sTCP:LISTEN")
+	raw, err := collectorRunCommand("lsof", "-nP", "-iTCP", "-sTCP:LISTEN")
 	if err != nil {
-		return []schema.Record{}, nil
+		return nil, fmt.Errorf("list listening ports: %w", err)
 	}
 	out := []schema.Record{}
 	lines := strings.Split(raw, "\n")

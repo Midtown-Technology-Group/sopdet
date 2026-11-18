@@ -30,3 +30,19 @@ func TestLoadMissingReturnsDefaults(t *testing.T) {
 		t.Fatalf("expected defaults: %+v", cfg)
 	}
 }
+
+func TestLoadAPIKeyFromEnvironment(t *testing.T) {
+	t.Setenv("SOPDET_API_KEY", "environment-key")
+	path := filepath.Join(t.TempDir(), "inventory.config.json")
+	if err := os.WriteFile(path, []byte(`{"apiKey":"file-key"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.APIKey != "environment-key" {
+		t.Fatalf("expected environment key to override file value, got %q", cfg.APIKey)
+	}
+}

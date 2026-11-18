@@ -142,6 +142,9 @@ func (r *Reporter) deliver(e progress.Event) {
 		mark = r.red("not delivered")
 	}
 	r.line("%s  %s  chunks=%d spooled=%d", r.dim("send"), mark, chunks, spooled)
+	if e.Message != "" {
+		r.line("%s  %s", r.dim("    "), e.Message)
+	}
 }
 
 func (r *Reporter) done(e progress.Event) {

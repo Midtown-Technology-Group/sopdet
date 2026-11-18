@@ -52,21 +52,29 @@ make vet
 ```sh
 ./bin/sopdet -profile minimal -dry-run -out device.json
 ./bin/sopdet -config inventory.config.json
-./bin/sopdet -endpoint https://bifrost.example.com/api/endpoints/<id> \
-    -api-key <key> -profile quick -compress -delta
+# Supply SOPDET_API_KEY through the deployment environment or protected config.
+./bin/sopdet \
+    -endpoint https://bifrost.example.com/api/endpoints/<id> \
+    -profile quick -compress -delta
 ```
 
 Flags override the config file; a missing `inventory.config.json` next to the
 binary is loaded automatically.
 
+A chunk counts as delivered only when the endpoint response reports workflow
+`status: "Success"`, so configure the ingest workflow for **sync** execution.
+Any other answer, such as `Failed`, `Timeout` or an async `Pending`, leaves the
+delta baseline unchanged so the next scan resends. The run then exits with
+code 3.
+
 | Flag | Meaning |
 |---|---|
 | `-config` | config file path |
 | `-profile` | `minimal` \| `quick` \| `full` |
-| `-endpoint` / `-api-key` | Bifrost ingest endpoint and key |
+| `-endpoint` / `SOPDET_API_KEY` | Bifrost ingest endpoint and key (key via environment or protected config file) |
 | `-out` | write the envelope to a file |
 | `-compress` | gzip+base64 the payload |
-| `-delta` | send only changes after a baseline snapshot |
+| `-delta` | send only changes since the last scan delivered to the same endpoint with the same key; a run that posts nowhere (no endpoint, or `-dry-run`) diffs against the last such run, so its output can be a delta rather than a full inventory; otherwise a full snapshot |
 | `-dry-run` | collect only; never post |
 | `-proxy`, `-state` | proxy URL, delta state file |
 | `-include-appx`, `-include-processes` | extra entities |
@@ -108,7 +116,8 @@ contract: [`device-control-plane.md`](https://github.com/Midtown-Technology-Grou
 
 ```sh
 # First run: mint a one-time enrollment token in Bifrost, then:
-sopdet -serve -bifrost-url https://bifrost.example.com -enroll-token bfen_<id>_<secret>
+# Supply SOPDET_ENROLLMENT_TOKEN through the deployment environment.
+sopdet -serve -bifrost-url https://bifrost.example.com
 
 # Subsequent runs reuse the persisted device key:
 sopdet -serve -bifrost-url https://bifrost.example.com
@@ -118,12 +127,12 @@ sopdet -serve -bifrost-url https://bifrost.example.com
 |---|---|
 | `-serve` | resident serve mode (skips inventory collection) |
 | `-bifrost-url` | Bifrost base URL (env `SOPDET_BIFROST_URL`); **https**, http only on loopback |
-| `-device-key` | raw device key (env `SOPDET_DEVICE_KEY`); secret — never logged |
-| `-enroll-token` | one-time `bfen_` enrollment token (env `SOPDET_ENROLLMENT_TOKEN`) |
+| `SOPDET_DEVICE_KEY` | raw device key supplied through the environment; secret — never logged |
+| `SOPDET_ENROLLMENT_TOKEN` | one-time `bfen_` enrollment token supplied through the environment |
 | `-serve-state` | device-state path (env `SOPDET_SERVE_STATE`; default under the user config dir) |
 | `-poll-interval` | HTTP claim poll interval while WS is down (env `SOPDET_POLL_INTERVAL`, default 10s) |
 | `-work-dir` | working directory for per-job script temp files (env `SOPDET_WORK_DIR`) |
-| `-serve-config` | optional JSON config (flags > env > file) |
+| `-serve-config` | optional protected JSON config (non-secret flags > env > file) |
 | `SOPDET_DISABLE_HINTS` | **env only**: truthy (`1`, `true`, `yes`, `on`, case-insensitive) disables the WebSocket hint channel so the agent runs poll-only (M6.3 drill, [bifrost#852](https://github.com/Midtown-Technology-Group/bifrost/issues/852)) |
 
 Serve refuses to start without a URL plus either a device key or an enrollment
@@ -175,6 +184,10 @@ One envelope per scan. Every entity record carries a stable `key`, a content
 [`schema/inventory.schema.json`](schema/inventory.schema.json) and
 [`WHAT-IT-COLLECTS.md`](WHAT-IT-COLLECTS.md).
 
+A delta baseline belongs to the endpoint and ingest key it was delivered with,
+exactly as configured. A changed endpoint or key, a dry run, or a state file
+from an earlier version makes the next delivery a full snapshot.
+
 Modes: `action=snapshot` (full), `action=delta` (added/changed/removed after a
 baseline), per-entity transport chunks (`chunk`), and `-MaxPayloadBytes` size
 budgeting with `summarized`/`omitted`.
@@ -216,23 +229,25 @@ additionally need the supplemental policy in [docs/appcontrol.md](docs/appcontro
 ### Deploy on Windows
 
 `scripts/Deploy-Sopdet.ps1` is the NinjaOne-deployable installer. It downloads
-from the GitHub release, verifies the SHA-256 against `MANIFEST.sha256`, clears
-the mark-of-the-web, then reports the version, runs a one-shot scan, or starts
-serve mode:
+from the GitHub release, verifies the SHA-256 against an operator-supplied pin
+obtained through a separate trusted channel, clears the mark-of-the-web, then
+reports the version, runs a one-shot scan, or starts serve mode:
 
 ```powershell
 # verify + report only
-./scripts/Deploy-Sopdet.ps1 -DownloadOnly
+./scripts/Deploy-Sopdet.ps1 -ExpectedSha256 <64-character-sha256> -DownloadOnly
 # one-shot scan
-./scripts/Deploy-Sopdet.ps1 -Endpoint <bifrost-endpoint> -ApiKey <key> -Profile quick -Compress
+./scripts/Deploy-Sopdet.ps1 -ExpectedSha256 <64-character-sha256> -Endpoint <bifrost-endpoint> -Profile quick -Compress
 # resident serve mode
-./scripts/Deploy-Sopdet.ps1 -Serve -BifrostUrl https://bifrost.example.com -EnrollToken bfen_<id>_<secret>
+./scripts/Deploy-Sopdet.ps1 -ExpectedSha256 <64-character-sha256> -Serve -BifrostUrl https://bifrost.example.com
 ```
 
-Secrets default from `SOPDET_API_KEY`, `SOPDET_ENROLLMENT_TOKEN`, and
-`SOPDET_DEVICE_KEY`, so a NinjaOne script can set the environment instead of
-exposing them on the command line. Point at another build with `-Url` /
-`-ManifestUrl`, or supply `-ExpectedSha256` directly.
+Inject secrets through `SOPDET_API_KEY`, `SOPDET_ENROLLMENT_TOKEN`, and
+`SOPDET_DEVICE_KEY` in the deployment environment. The wrapper passes them
+through to the collector without command-line arguments. Point at another build
+with `-Url` and supply its `-ExpectedSha256` pin. The pin is mandatory because a
+manifest downloaded from the same release channel cannot authenticate the
+publisher.
 
 ```sh
 make sign-public      # Windows signing host -> dist/signed-public

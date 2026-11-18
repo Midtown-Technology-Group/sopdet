@@ -69,7 +69,7 @@ Explicit command-line arguments override the file.
 | `includeAppx` | Include Store/UWP packages (slower) | false |
 | `includeProcesses` | Include running processes (PII-heavy) | false |
 | `compress` | gzip+base64 the payload | false |
-| `delta` | Send only changes after a baseline snapshot | false |
+| `delta` | Send only changes since the last scan delivered to the same endpoint with the same key. A run that posts nowhere (no endpoint, or `dryRun`) diffs against the last such run, so its output can be a delta rather than a full inventory. Otherwise a full snapshot | false |
 | `chunkBytes` | Max chunk size (base64 chars) | 900000 |
 | `maxRetries` | Retry attempts per chunk | 4 |
 | `maxListItems` | Cap per collection | 2000 |
@@ -97,6 +97,10 @@ To sign the collector and refresh the manifest with your code-signing cert:
 ```powershell
 .\tools\New-SignedPackage.ps1 -CertificateThumbprint <THUMBPRINT>
 ```
+
+Fleet fanout also requires the collector's SHA-256 from a separate trusted
+channel. Pass it as `-ExpectedCollectorSha256`; the script refuses to contact
+any target when the local collector does not match the pin.
 
 ## Privacy and scope
 

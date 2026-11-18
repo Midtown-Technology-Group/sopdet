@@ -13,6 +13,74 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 - Signing runbook uses separate Public and Private identity validation IDs for
   their matching certificate profiles.
 
+- Inventory delivery (Go agent and PowerShell package) now counts a chunk as
+  delivered only when the Bifrost endpoint reports workflow status `Success`.
+  Bifrost answers HTTP 200 for failed and timed-out workflows too (and
+  `Pending` for async ones). Previously those counted as delivered and advanced
+  the delta baseline, so changes were silently lost. An answered but unconfirmed
+  chunk is not retried or spooled, because the workflow may have run. The
+  baseline stays put, so the next scan resends the changes, and the run exits
+  with code 3 and lists the unconfirmed chunks. The ingest workflow must use
+  sync execution for delivery to be confirmed.
+
+- A delta baseline is now tied to the endpoint and ingest key it was delivered
+  with: it records the retry spool's scope, so a baseline and the chunks still
+  spooled for it share one identity. A run that delivers somewhere else,
+  including a new endpoint or a rotated key, sends a full snapshot instead of a
+  delta against inventory that target never received, and discards the old
+  baseline before posting, because replaying its own spooled chunks can change
+  what the receiver holds. Dry runs
+  no longer leave a baseline that a later real run would diff against. State
+  files written by earlier versions record no endpoint, so the first scan after
+  upgrading is a full snapshot. Applies to the Go agent and the PowerShell
+  collector.
+
+### Security
+
+- Signing and App Control runbooks use protected environment variables and
+  synthetic lab language instead of tracked cloud, operator, endpoint, or
+  customer identifiers. CI signing role assignment uses an approved
+  service-principal object ID and creates no password credential.
+
+- Platform collectors now surface access, execution, parse, and file failures
+  through `entity_errors` instead of reporting a clean empty result. When a
+  secondary source fails after records were collected, the records and error
+  are both retained so partial posture evidence is explicit.
+
+- Fleet fanout accepts only a validated collection profile and passes it as a
+  typed argument to the remote collector. SMB/schtasks deployment, which put
+  administrative passwords in process command lines, is removed; WinRM remains.
+
+- Inventory ingest requires HTTPS except for loopback testing and refuses
+  redirects before sending device data or the engagement key.
+
+- Release publication starts only from a pushed, annotated version tag whose
+  target is the triggering commit on main. Signing and release jobs have scoped
+  token permissions; arbitrary-tag manual dispatch is removed.
+
+- Pending inventory is isolated by collector implementation, ingest endpoint,
+  and credential identity. Legacy unscoped spool files are retained for manual
+  review and are not replayed automatically.
+
+- Device-control HTTP and WebSocket clients refuse redirects before sending
+  device credentials or trusting a redirected claim response.
+
+- Windows bootstrap and fleet fanout require an out-of-band SHA-256 pin before
+  executing or copying an artifact. Same-channel manifests and the bootstrap
+  verification bypass are no longer trusted for publisher authentication.
+
+### Changed
+
+- Device job logs preserve UTF-8 character boundaries and budget the normalized
+  bytes actually sent, keeping multibyte output within the platform job cap.
+
+- Ingest, enrollment, and device credentials are accepted through environment
+  variables or protected configuration instead of command-line flags. The
+  deployment wrapper no longer copies those secrets into child arguments.
+
+- Optional process inventory no longer reads or exports process command lines,
+  which can contain unrelated credentials.
+
 ## [0.2.0] - 2026-10-03
 
 ### Added
@@ -116,11 +184,11 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
   tier to a stable `unsigned-latest` GitHub release, giving permanent
   `/releases/latest/download/<asset>` URLs (no SAS expiry). See the README
   "Download (unsigned)" section.
-- Provisioned Azure Artifact Signing: Basic-SKU account `mtg-sopdet-signing`
-  (`eastus`, endpoint `https://eus.codesigning.azure.net/`) in
-  `rg-sopdet-signing`, with the signed-in user granted the Artifact Signing
-  Identity Verifier role. Identity validation and certificate-profile creation
-  remain (portal). See [docs/signing.md](docs/signing.md).
+- Provisioned Azure Artifact Signing with a Basic-SKU account and a scoped
+  Artifact Signing Identity Verifier grant. Environment-specific resource names,
+  identities, and endpoints remain outside the repository. Identity validation
+  and certificate-profile creation remain portal steps. See
+  [docs/signing.md](docs/signing.md).
 - Progress and branding: every run now emits a shared event stream rendered by
   a branded terminal reporter (banner, live progress meter, per-collector lines,
   summary; plain-log fallback when not a TTY or with `-quiet`) and, with `-ui`,

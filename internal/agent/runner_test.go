@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // fakePowerShell writes an executable sh script used in place of
@@ -173,6 +174,47 @@ func TestRunnerOutputCapEnforced(t *testing.T) {
 	defer mu.Unlock()
 	if total > 1000 {
 		t.Errorf("emitted %d bytes, cap is 1000", total)
+	}
+}
+
+func TestStreamPumpPreservesUTF8BoundaryAtOutputCap(t *testing.T) {
+	var entries []LogEntry
+	state := &runState{
+		budget: outputBudget{max: 1024},
+		onLogs: func(batch []LogEntry) { entries = append(entries, batch...) },
+	}
+	pump := &streamPump{stream: "stdout", maxBuf: 2048, state: state}
+	chunk := append([]byte(strings.Repeat("a", 1023)), 0xc3)
+	pump.add(chunk)
+	pump.flush()
+	pump.add([]byte{0xa9})
+	pump.finish()
+
+	var output string
+	for _, entry := range entries {
+		output += entry.Text
+	}
+	if !utf8.ValidString(output) {
+		t.Fatalf("emitted output is not valid UTF-8: %q", output)
+	}
+	if len(output) != 1023 {
+		t.Fatalf("emitted %d bytes, want the 1023-byte valid prefix", len(output))
+	}
+	observed, truncated := state.budget.stats()
+	if observed != int64(len(output)) || !truncated {
+		t.Fatalf("budget = (%d, %v), output bytes = %d", observed, truncated, len(output))
+	}
+}
+
+func TestStreamPumpExactOutputCapIsNotTruncated(t *testing.T) {
+	state := &runState{budget: outputBudget{max: 4}}
+	pump := &streamPump{stream: "stdout", maxBuf: 8, state: state}
+	pump.add([]byte("test"))
+	pump.finish()
+
+	observed, truncated := state.budget.stats()
+	if observed != 4 || truncated {
+		t.Fatalf("budget = (%d, %v), want (4, false)", observed, truncated)
 	}
 }
 
