@@ -29,6 +29,9 @@ type Result struct {
 	Chunks     int
 	Spooled    int
 	Summarized bool
+	// Unconfirmed lists chunks the endpoint answered without confirming a
+	// successful workflow run; the delta baseline is not advanced for them.
+	Unconfirmed []string
 }
 
 // Run executes one inventory scan. rep may be nil.
@@ -151,6 +154,7 @@ func Run(ctx context.Context, cfg config.Config, agentVersion string, rep *progr
 		res.Delivered = ir.Delivered
 		res.Chunks = ir.Chunks
 		res.Spooled = ir.Spooled
+		res.Unconfirmed = ir.Unconfirmed
 	} else {
 		res.Delivered = true
 		if cfg.OutputPath == "" {
@@ -161,15 +165,24 @@ func Run(ctx context.Context, cfg config.Config, agentVersion string, rep *progr
 			fmt.Println(string(compact))
 		}
 	}
+	deliverMsg := ""
+	if len(res.Unconfirmed) > 0 {
+		deliverMsg = fmt.Sprintf(
+			"endpoint did not confirm %d chunk(s); delta baseline kept, next scan resends: %s",
+			len(res.Unconfirmed), strings.Join(res.Unconfirmed, "; "),
+		)
+	}
 	rep.Emit(progress.Event{
-		Kind:  progress.KindDeliver,
-		Stage: "deliver",
-		OK:    progress.Bool(res.Delivered),
+		Kind:    progress.KindDeliver,
+		Stage:   "deliver",
+		OK:      progress.Bool(res.Delivered),
+		Message: deliverMsg,
 		Data: map[string]any{
-			"delivered": res.Delivered,
-			"chunks":    res.Chunks,
-			"spooled":   res.Spooled,
-			"dry_run":   cfg.Endpoint == "" || cfg.DryRun,
+			"delivered":   res.Delivered,
+			"chunks":      res.Chunks,
+			"spooled":     res.Spooled,
+			"unconfirmed": len(res.Unconfirmed),
+			"dry_run":     cfg.Endpoint == "" || cfg.DryRun,
 		},
 	})
 
