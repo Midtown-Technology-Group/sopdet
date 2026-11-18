@@ -21,6 +21,9 @@ from pathlib import Path
 
 MINIMUM_PYTHON = (3, 11)
 MAX_TAG_CHAIN = 8
+APPROVALS_FILE = ".secret-gate-false-positives.json"
+APPROVAL_FIELDS = {"ignore_sha", "detector", "reason"}
+SAFE_DETECTOR = re.compile(r"[\w .()/+-]{1,80}")
 GITDIR_PREFIX = "gitdir:"
 
 
@@ -500,35 +503,183 @@ def write_annotations(tags, directory):
     return documents
 
 
-def clean_receipt(record):
-    """Recognize a zero-incident result without exposing scanner content."""
+def load_approvals(source):
+    """Read reviewed false positives from the destination, never the candidate."""
+    if source is None:
+        return {}
+    listing = git("ls-tree", source, "--", APPROVALS_FILE)
+    if not listing:
+        return {}
+    invalid = GateError(
+        20, "BASE_ERROR: invalid false-positive list; publication blocked."
+    )
+    fields = listing.split(None, 3)
+    if len(fields) != 4 or fields[1] != "blob":
+        raise invalid
+    if int(git("cat-file", "-s", fields[2])) > 64 * 1024:
+        raise invalid
+    try:
+        data = json.loads(git("cat-file", "blob", fields[2]))
+    except ValueError as error:
+        raise invalid from error
+    if (
+        not isinstance(data, dict)
+        or set(data) != {"version", "false_positives"}
+        or data["version"] != 1
+        or not isinstance(data["false_positives"], list)
+    ):
+        raise invalid
+    approvals = {}
+    for entry in data["false_positives"]:
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != APPROVAL_FIELDS
+            or not isinstance(entry["ignore_sha"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", entry["ignore_sha"])
+            or not isinstance(entry["detector"], str)
+            or not SAFE_DETECTOR.fullmatch(entry["detector"])
+            or not isinstance(entry["reason"], str)
+            or len(entry["reason"].strip()) < 10
+            or entry["ignore_sha"] in approvals
+        ):
+            raise invalid
+        approvals[entry["ignore_sha"]] = entry["detector"]
+    return approvals
+
+
+def approved(incident, approvals):
+    """Match one finding to a reviewed false positive by exact hash and detector."""
     return (
-        isinstance(record, dict)
-        and record.get("total_incidents") == 0
-        and record.get("total_occurrences") == 0
-        and not record.get("errors")
-        and not record.get("scans")
-        and not record.get("incidents")
+        isinstance(incident, dict)
+        and incident.get("policy") == "Secrets detection"
+        and isinstance(incident.get("ignore_sha"), str)
+        and approvals.get(incident["ignore_sha"]) == incident.get("type")
     )
 
 
-def confirm_message_scan(output, documents, directory):
+def report_entries(report, kind):
+    """Yield (commit, entry) pairs from a ggshield JSON report of one kind."""
+    if not isinstance(report, dict) or report.get("errors"):
+        raise TypeError("unsupported report")
+    if kind == "commit-range" and report.get("type") == "commit-range":
+        scans = report.get("scans")
+        if not isinstance(scans, list):
+            raise TypeError("unsupported report")
+        for item in scans:
+            entries = (
+                item.get("entities_with_incidents") if isinstance(item, dict) else None
+            )
+            if not isinstance(entries, list):
+                raise TypeError("unsupported report")
+            yield from ((item.get("id"), entry) for entry in entries)
+    elif kind == "path" and report.get("type") == "path_scan":
+        entries = report.get("entities_with_incidents")
+        if not isinstance(entries, list):
+            raise TypeError("unsupported report")
+        yield from ((None, entry) for entry in entries)
+    else:
+        raise TypeError("unsupported report")
+
+
+def describe(commit, entry, incident):
+    """Return safe finding metadata: detector, ignore hash and location only."""
+    detector = incident.get("type")
+    ignore = incident.get("ignore_sha")
+    name = entry.get("filename")
+    lines = sorted(
+        {
+            o.get("line_start")
+            for o in incident.get("occurrences") or []
+            if isinstance(o, dict) and isinstance(o.get("line_start"), int)
+        }
+    )
+    where = name if isinstance(name, str) and name.isprintable() else "<unprintable>"
+    if isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{40,64}", commit):
+        where = commit[:12] + ":" + where
+    return (
+        f"FINDING: {detector if isinstance(detector, str) and SAFE_DETECTOR.fullmatch(detector) else '<unknown>'}"
+        f" ignore_sha={ignore if isinstance(ignore, str) and re.fullmatch(r'[0-9a-f]{64}', ignore) else '<unknown>'}"
+        f" at {where}" + (f" line {','.join(map(str, lines))}" if lines else "")
+    )
+
+
+def settle_findings(output, kind, approvals):
+    """Allow a findings exit only when every finding is a reviewed false positive."""
+    findings = GateError(1, "FINDINGS: secrets detected; remediate before publication.")
+    try:
+        report = json.loads(output)
+        found = []
+        for commit, entry in report_entries(report, kind):
+            incidents = entry.get("incidents") if isinstance(entry, dict) else None
+            if not isinstance(incidents, list):
+                raise TypeError("unsupported report")
+            found.extend((commit, entry, incident) for incident in incidents)
+    except (ValueError, TypeError) as error:
+        raise findings from error
+    if not found or len(found) != report.get("total_incidents"):
+        raise findings
+    rejected = [item for item in found if not approved(item[2], approvals)]
+    for item in rejected:
+        print(
+            describe(*item) if isinstance(item[2], dict) else "FINDING: <unknown>",
+            file=sys.stderr,
+        )
+    if rejected:
+        raise findings
+    print(
+        f"APPROVED: {len(found)} reviewed false positive(s) in {kind} scan.", flush=True
+    )
+
+
+def clean_receipt(record, approvals=None):
+    """Recognize a result whose findings, if any, are all reviewed false positives."""
+    if not isinstance(record, dict) or record.get("errors") or record.get("scans"):
+        return False
+    incidents = record.get("incidents") or []
+    if not isinstance(incidents, list) or not all(
+        approved(i, approvals or {}) for i in incidents
+    ):
+        return False
+    occurrences = sum(
+        i.get("total_occurrences")
+        if isinstance(i.get("total_occurrences"), int)
+        else -1
+        for i in incidents
+    )
+    return (
+        record.get("total_incidents") == len(incidents)
+        and record.get("total_occurrences") == occurrences
+    )
+
+
+def confirm_message_scan(output, documents, directory, approvals=None):
     """Require exactly one clean SDK result for every generated document."""
     failure = "SCAN_ERROR: incomplete or unsupported message scan; publication blocked."
     try:
         report = json.loads(output)
     except (ValueError, TypeError) as error:
         raise GateError(4, failure) from error
-    if not clean_receipt(report) or report.get("type") != "path_scan":
+    if not isinstance(report, dict):
         raise GateError(4, failure)
     entries = report.get("entities_with_incidents")
-    if not isinstance(entries, list) or len(entries) != len(documents):
+    if (
+        report.get("type") != "path_scan"
+        or not isinstance(entries, list)
+        or len(entries) != len(documents)
+        or not all(isinstance(e, dict) for e in entries)
+        or report.get("errors")
+        or report.get("scans")
+        or report.get("total_incidents")
+        != sum(e.get("total_incidents", -1) for e in entries)
+        or report.get("total_occurrences")
+        != sum(e.get("total_occurrences", -1) for e in entries)
+    ):
         raise GateError(4, failure)
     expected = {os.path.normcase(os.path.normpath(document)) for document in documents}
     confirmed = set()
     for entry in entries:
         if (
-            not clean_receipt(entry)
+            not clean_receipt(entry, approvals)
             or entry.get("mode") != "FILE"
             or not isinstance(entry.get("filename"), str)
         ):
@@ -544,7 +695,7 @@ def confirm_message_scan(output, documents, directory):
         raise GateError(4, failure)
 
 
-def scan(revisions, executable, annotations=()):
+def scan(revisions, executable, annotations=(), approvals=dict):
     # Keep native authentication, but prevent config/dotenv/fail-open/logging
     # settings from changing this gate. Never persist or forward findings.
     """Run strict ggshield scans and suppress sensitive scanner diagnostics."""
@@ -598,8 +749,11 @@ def scan(revisions, executable, annotations=()):
             encoding="utf-8",
         )
 
+        reviewed = []
+
         def run(arguments, documents=None):
-            # Even censored findings can include sensitive source context.
+            # Even censored findings can include sensitive source context. JSON
+            # stays in memory; only finding metadata is ever printed.
             result = subprocess.run(
                 [
                     executable,
@@ -613,13 +767,24 @@ def scan(revisions, executable, annotations=()):
                 check=False,
                 env=env,
                 cwd=directory,
-                stdout=subprocess.DEVNULL if documents is None else subprocess.PIPE,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 timeout=1800,
             )
-            scanner_result(result)
+            granted = {}
+            if result.returncode == 1:
+                if not reviewed:
+                    reviewed.append(approvals())
+                granted = reviewed[0]
+                settle_findings(
+                    result.stdout,
+                    "path" if documents is not None else "commit-range",
+                    granted,
+                )
+            else:
+                scanner_result(result)
             if documents is not None:
-                confirm_message_scan(result.stdout, documents, directory)
+                confirm_message_scan(result.stdout, documents, directory, granted)
 
         def run_documents(folder, documents):
             run(
@@ -638,7 +803,7 @@ def scan(revisions, executable, annotations=()):
             messages = Path(directory) / f"messages-{index}"
             documents = write_messages(revision, count, messages)
             print(f"SCANNING: {count} commit(s), {revision}", flush=True)
-            run(["commit-range", "--all-secrets", revision])
+            run(["commit-range", "--all-secrets", "--json", revision])
             run_documents(messages, documents)
         if annotations:
             folder = Path(directory) / "annotations"
@@ -646,6 +811,16 @@ def scan(revisions, executable, annotations=()):
             print(f"SCANNING: {len(annotations)} tag annotation(s)", flush=True)
             run_documents(folder, documents)
     return 0
+
+
+def source(args, selected):
+    """Locate reviewed approvals: the scanned PR base, else the remote default tip."""
+    if not args.pre_push and not args.all_history and ".." in selected[0]:
+        return selected[0].split("..", 1)[0]
+    try:
+        return remote_base(args.remote)
+    except GateError:
+        return None
 
 
 def verify_snapshot(args, head, selected):
@@ -720,7 +895,12 @@ def main(argv=None, stream=None):
                 21,
                 "UNAVAILABLE: install approved ggshield; publication blocked.",
             )
-        scan(revisions, scanner, annotations)
+        scan(
+            revisions,
+            scanner,
+            annotations,
+            lambda: load_approvals(source(args, selected)),
+        )
         verify_snapshot(args, head, selected)
         tags = f" and {len(annotations)} tag annotation(s)" if annotations else ""
         print(

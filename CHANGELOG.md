@@ -7,6 +7,16 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ### Development
 
+- The secret gate supports reviewed false positives. A blocking finding now
+  prints only its detector, ggshield `ignore_sha` and location. A matching entry
+  in `.secret-gate-false-positives.json`, read from the destination branch so a
+  push can't approve itself, lets that exact finding pass. The first entry
+  covers a `Generic Password` match on collector code in the initial commit.
+  That match made every new tag or branch push fail its full-history scan,
+  which blocked the `v0.3.0` release tag.
+
+### Development
+
 - The secret gate now scans annotated tags before they are pushed, instead of
   refusing them. It scans the complete text of every tag object in the chain
   (headers, message and signature) alongside the commit history, so a signed,

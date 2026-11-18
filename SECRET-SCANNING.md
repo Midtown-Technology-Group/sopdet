@@ -67,7 +67,8 @@ raw commit objects over 128 KiB, or NUL-bearing messages block with exit 20.
 Documents use exact UTF-8 bytes and LF on every platform. A successful process
 exit must also include exactly one clean JSON result for every generated document;
 skipped, duplicate, unexpected, incomplete or unsupported results block with exit 4.
-Scanner JSON stays in memory and is never printed or retained. Git output is
+Scanner JSON stays in memory and is never retained; only the finding metadata
+described under [reviewed false positives](#reviewed-false-positives) is printed. Git output is
 decoded as UTF-8 on every platform; invalid UTF-8 blocks with scan-error exit 4.
 The gate resolves its own private temporary directory before writing documents
 or starting scanners, so filesystem aliases use the same path spelling as the SDK.
@@ -82,7 +83,7 @@ Only exit **0 / CLEAN** means a successful scanner run. Other outcomes block:
 
 | Exit | Outcome |
 | --- | --- |
-| 1 | Findings; remediate before publication |
+| 1 | Findings that are not reviewed false positives; remediate, or review them as below |
 | 2 | Invalid gate arguments |
 | 3 | Authentication failed/unavailable; owner must restore approved native auth |
 | 4 | Scan/transport/server/timeout error, or HEAD/base changed between initial resolution and final verification |
@@ -96,6 +97,50 @@ log files are disabled, and all secrets are requested. Credentials stay in their
 native storage/process environment. Raw findings and diagnostics are suppressed,
 including source context; investigate findings locally in an approved private
 terminal. Do not paste secret values into chat, tickets or logs.
+
+## Reviewed false positives
+
+Each finding that blocks prints one metadata line: detector, ggshield's
+`ignore_sha` (a SHA-256 of the match, never the value) and location, for example
+`FINDING: Generic Password ignore_sha=<64 hex> at <commit>:<file> line <n>`.
+Matched text and source context are never printed.
+
+To mark a finding as a false positive, add it to `.secret-gate-false-positives.json`
+at the repository root and merge that change through normal review:
+
+```json
+{
+  "version": 1,
+  "false_positives": [
+    {
+      "ignore_sha": "<64 lowercase hex from the FINDING line>",
+      "detector": "<detector name from the FINDING line>",
+      "reason": "<why this is not a credential>"
+    }
+  ]
+}
+```
+
+- The gate reads the list from the **destination's reviewed state**: the scanned
+  PR base, or the remote's current default branch for pre-push and
+  `--all-history`. A list that exists only in the outgoing commits approves
+  nothing, so a push cannot approve its own finding. Land the entry first.
+- A finding passes only if both its `ignore_sha` and its detector match an
+  entry. `--all-secrets` stays on, so ggshield's own ignore rules, dashboard
+  state and repository configuration still cannot hide anything.
+- When ggshield reports findings, the gate continues only if every finding is
+  approved and the report's totals agree with the findings it lists. One
+  unapproved finding blocks the whole scan, and an approved scan prints
+  `APPROVED: <n> reviewed false positive(s)`.
+- The list must be exactly this shape: version 1, each entry with only these three
+  fields, a 64-hex hash, a plain detector name and a reason of at least 10
+  characters, and no duplicates. Anything else blocks with exit 20.
+- The list is read only after a findings result, so clean scans need no remote
+  lookup. If the destination can't be read, no approvals apply.
+
+Approvals apply equally to file history, commit messages and tag annotations.
+Because the hash identifies the matched value, an approval covers that exact
+value wherever it appears. Never approve a real credential: rotate it instead.
 
 GitGuardian App/server-side checks, CI secret scans, Gitleaks, branch protection,
 and existing approval controls remain required and unchanged. Local scanning adds
