@@ -5,6 +5,8 @@ Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-18
+
 ### Fixed
 
 - Serve mode now sweeps stale per-job script staging files
