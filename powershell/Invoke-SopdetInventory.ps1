@@ -215,14 +215,25 @@ function Convert-StateToMap($State) {
     return $maps
 }
 
-function Get-StateObject([string]$ScanId) {
+# A baseline describes only what its target holds: 'local' for a run that posts
+# nowhere, otherwise the spool scope of the endpoint and key (Get-SpoolScope),
+# so a baseline and the chunks still spooled for it share one identity. State
+# recorded for another target, or before targets were recorded, is no baseline.
+function Test-BaselineTarget($State, [string]$Target) {
+    if ($null -eq $State) { return $false }
+    $recorded = $null
+    try { $recorded = [string]$State.target } catch { Write-Verbose "ignored: $_" }
+    return ($recorded -ceq $Target)
+}
+
+function Get-StateObject([string]$ScanId, [string]$Target) {
     $ents = [ordered]@{}
     foreach ($n in $script:Entities.Keys) {
         $m = [ordered]@{}
         foreach ($r in $script:Entities[$n].records) { $m[$r.key] = $r.fingerprint }
         $ents[$n] = $m
     }
-    return [ordered]@{ schema_version = $SchemaVersion; scan_id = $ScanId; observed_at = $script:NowIso; entities = $ents }
+    return [ordered]@{ schema_version = $SchemaVersion; scan_id = $ScanId; observed_at = $script:NowIso; target = $Target; entities = $ents }
 }
 
 function Get-DeltaEntity($PrevMaps) {
@@ -2036,9 +2047,18 @@ $script:Summarized = $false
 $action = 'snapshot'
 $baseScanId = $null
 $statePath = Resolve-StatePath $StatePath
+$posting = [bool]$Endpoint -and -not $DryRun
+$deliveryTarget = 'local'
+if ($posting) { $deliveryTarget = Get-SpoolScope $Endpoint $ApiKey }
+$prevState = $null
+if ($Delta -or $posting) { $prevState = Read-JsonFile $statePath }
+# Posting under another identity can change what the receiver holds, for
+# example by replaying chunks spooled under this one, so the old baseline no
+# longer describes it. It is removed before anything is sent.
+$staleBaseline = $posting -and $null -ne $prevState -and -not (Test-BaselineTarget $prevState $deliveryTarget)
 if ($Delta) {
-    $prevState = Read-JsonFile $statePath
-    $prevMaps = Convert-StateToMap $prevState
+    $prevMaps = @{}
+    if (Test-BaselineTarget $prevState $deliveryTarget) { $prevMaps = Convert-StateToMap $prevState }
     if ($prevMaps.Count -gt 0) {
         if ($prevState -and $prevState.scan_id) { $baseScanId = [string]$prevState.scan_id }
         $script:OutEntities = Get-DeltaEntity $prevMaps
@@ -2102,11 +2122,12 @@ $header = New-Object System.Collections.Specialized.OrderedDictionary
 foreach ($k in $envelope.Keys) { if ($k -ne 'entities') { $header.Add($k, $envelope[$k]) } }
 
 $delivered = $false
-if ($DryRun -or -not $Endpoint) {
+if (-not $posting) {
     if ($Compress -or $Compact) { Write-Output $jsonWire } else { Write-Output $jsonPretty }
     $delivered = $true
 } else {
     $spoolDir = Join-Path $env:LOCALAPPDATA 'Sopdet\spool'
+    if ($staleBaseline) { Remove-Item -LiteralPath $statePath -Force -ErrorAction Stop }
     $ingestResult = Send-Ingest $header $script:OutEntities $Endpoint $ApiKey $Compress.IsPresent $ChunkBytes $MaxRetries $Proxy $spoolDir $envelope.scan_id
     $delivered = [bool]$ingestResult.delivered
     [ordered]@{
@@ -2122,7 +2143,7 @@ if ($DryRun -or -not $Endpoint) {
 
 if ($delivered -and -not $script:Summarized) {
     try {
-        $stateObj = Get-StateObject $envelope.scan_id
+        $stateObj = Get-StateObject $envelope.scan_id $deliveryTarget
         Write-Utf8 -Path $statePath -Text ($stateObj | ConvertTo-Json -Depth 24 -Compress)
     } catch { Write-Verbose "ignored: $_" }
 }
